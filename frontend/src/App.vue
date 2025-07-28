@@ -137,6 +137,10 @@ const removeItem = (itemToRemove: TreeItem) => {
     });
   };
   treeData.value = remove(treeData.value);
+
+  if (treeData.value.length === 0) {
+    appStarted.value = false;
+  }
 };
 
 const flattenedTree = computed(() => {
@@ -187,7 +191,6 @@ const flattenedTree = computed(() => {
       @dragleave.prevent="isDraggingOverPanel = false"
       @drop="handleDrop">
       <ul class="file-list">
-        <li v-if="flattenedTree.length === 0" class="empty-list-message">파일 없음</li>
         <li v-for="item in flattenedTree" :key="item.id" class="file-item" :style="{ paddingLeft: `${item.depth * 20 + 16}px` }" @click="onFileItemClick(item)">
           <span class="item-icon">
             <template v-if="item.type === 'folder'">{{ item.isExpanded ? '▼' : '▶' }}</template>
