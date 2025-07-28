@@ -26,7 +26,7 @@ cd logView
 
 #### 2. 백엔드 설정 및 실행
 
-백엔드는 Python FastAPI를 사용합니다. `log.jsonl` 파일을 읽어 로그 데이터를 제공합니다.
+백엔드는 Python FastAPI를 사용합니다. `*.jsonl` 파일을 읽어 로그 데이터를 제공합니다.
 
 1.  **가상 환경 설정 및 의존성 설치**
 
@@ -43,7 +43,7 @@ cd logView
 
 2.  **로그 파일 준비**
 
-    백엔드는 `backend/log.jsonl` 파일을 읽습니다. 이 파일을 프로젝트의 `backend` 디렉토리 내에 위치시켜야 합니다. 만약 다른 경로에 있다면 `main.py` 파일을 수정해야 합니다.
+    `.jsonl` 형식의 파일을 읽습니다.
 
     예시 `log.jsonl` 내용:
     ```jsonl
