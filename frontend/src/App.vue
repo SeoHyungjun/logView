@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, nextTick } from 'vue';
+import hljs from 'highlight.js';
+import 'highlight.js/styles/github-dark.css'; // 원하는 테마를 선택하세요
 
 // --- 타입 정의 ---
 interface TreeItem {
@@ -12,6 +14,12 @@ interface TreeItem {
   file?: File;
 }
 
+interface LogPart {
+  type: 'text' | 'code';
+  content: string;
+  lang?: string;
+}
+
 // --- 상태 관리 ---
 const appStarted = ref(false);
 const logs = ref<any[]>([]);
@@ -21,6 +29,7 @@ const isDraggingOver = ref(false);
 const isDraggingOverPanel = ref(false); // 패널 드래그 상태
 const fileInput = ref<HTMLInputElement | null>(null);
 const folderInput = ref<HTMLInputElement | null>(null);
+const activeFileId = ref<string | null>(null);
 
 // --- 핵심 로직 ---
 const startApp = () => { appStarted.value = true; };
@@ -31,6 +40,13 @@ const loadJsonlFile = async (file: File) => {
     logs.value = [];
     const content = await file.text();
     logs.value = content.split('\n').filter(line => line.trim() !== '').map(line => JSON.parse(line));
+    const fileId = (file.webkitRelativePath || file.name);
+    activeFileId.value = fileId.slice(0, fileId.indexOf(file.name) + file.name.length);
+    await nextTick(() => {
+      document.querySelectorAll('pre code').forEach((block) => {
+        hljs.highlightElement(block as HTMLElement);
+      });
+    });
   } catch (e: any) {
     error.value = `파일을 파싱하는 중 오류 발생: ${e.message}`;
   }
@@ -120,11 +136,16 @@ const handleDrop = async (event: DragEvent) => {
 };
 
 const onFileItemClick = (item: TreeItem) => {
-  if (item.type === 'folder') { item.isExpanded = !item.isExpanded; } 
-  else if (item.file) { loadJsonlFile(item.file); }
+  if (item.type === 'folder') {
+    item.isExpanded = !item.isExpanded;
+  } else if (item.file) {
+    loadJsonlFile(item.file);
+    activeFileId.value = item.id;
+  }
 };
 
 const removeItem = (itemToRemove: TreeItem) => {
+  const wasActive = itemToRemove.id === activeFileId.value;
   const remove = (items: TreeItem[]): TreeItem[] => {
     return items.filter(item => {
       if (item.id === itemToRemove.id) {
@@ -140,6 +161,16 @@ const removeItem = (itemToRemove: TreeItem) => {
 
   if (treeData.value.length === 0) {
     appStarted.value = false;
+    activeFileId.value = null;
+  } else if (wasActive) {
+    const firstFile = flattenedTree.value.find(item => item.type === 'file');
+    if (firstFile && firstFile.file) {
+      loadJsonlFile(firstFile.file);
+      activeFileId.value = firstFile.id;
+    } else {
+      logs.value = [];
+      activeFileId.value = null;
+    }
   }
 };
 
@@ -153,6 +184,29 @@ const flattenedTree = computed(() => {
   };
   traverse(treeData.value);
   return flat;
+});
+
+const processLogContent = computed(() => {
+  return (content: string): LogPart[] => {
+    const parts: LogPart[] = [];
+    const codeBlockRegex = /```(\w+)?\n([\s\S]*?)\n```/g;
+    let lastIndex = 0;
+    let match;
+
+    while ((match = codeBlockRegex.exec(content)) !== null) {
+      const [fullMatch, lang, code] = match;
+      if (match.index > lastIndex) {
+        parts.push({ type: 'text', content: content.substring(lastIndex, match.index) });
+      }
+      parts.push({ type: 'code', content: code, lang: lang || 'plaintext' });
+      lastIndex = match.index + fullMatch.length;
+    }
+
+    if (lastIndex < content.length) {
+      parts.push({ type: 'text', content: content.substring(lastIndex) });
+    }
+    return parts;
+  };
 });
 </script>
 
@@ -168,7 +222,10 @@ const flattenedTree = computed(() => {
       <p class="init-description">JSONL 형식의 로그 파일을 위한 간단한 뷰어입니다.</p>
       <div :class="['drop-zone', { 'is-dragging-over': isDraggingOver }]">
         <div class="drop-zone-content">
-          <svg width="48" height="48" viewBox="0 0 16 16"><path fill="currentColor" d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/><path fill="currentColor" d="M7.646 1.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1-.708.708L8.5 2.707V11.5a.5.5 0 0 1-1 0V2.707L5.354 4.854a.5.5 0 1 1-.708-.708l3-3z"/></svg>
+          <svg width="48" height="48" viewBox="0 0 16 16">
+            <path fill="currentColor" d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/>
+            <path fill="currentColor" d="M7.646 1.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1-.708.708L8.5 2.707V11.5a.5.5 0 0 1-1 0V2.707L5.354 4.854a.5.5 0 1 1-.708-.708l3-3z"/>
+          </svg>
           <p>여기에 .jsonl 파일이나 폴더를 드래그 앤 드롭하세요.</p>
           <p class="or-text">또는</p>
           <div class="button-group">
@@ -177,12 +234,11 @@ const flattenedTree = computed(() => {
           </div>
         </div>
       </div>
+      <input type="file" ref="fileInput" @change="handleFileSelect" style="display: none;" accept=".jsonl" />
+      <input type="file" ref="folderInput" webkitdirectory directory multiple @change="handleFolderSelect" style="display: none;" />
     </div>
-    <input type="file" ref="fileInput" @change="handleFileSelect" style="display: none;" accept=".jsonl"/>
-    <input type="file" ref="folderInput" webkitdirectory directory multiple @change="handleFolderSelect" style="display: none;"/>
   </div>
 
-  <!-- 2. 메인 앱 화면 -->
   <div v-else class="app-layout">
     <div 
       class="file-panel"
@@ -191,7 +247,12 @@ const flattenedTree = computed(() => {
       @dragleave.prevent="isDraggingOverPanel = false"
       @drop="handleDrop">
       <ul class="file-list">
-        <li v-for="item in flattenedTree" :key="item.id" class="file-item" :style="{ paddingLeft: `${item.depth * 20 + 16}px` }" @click="onFileItemClick(item)">
+        <li v-for="item in flattenedTree" 
+            :key="item.id" 
+            class="file-item" 
+            :class="{ 'active': item.id === activeFileId }" 
+            :style="{ paddingLeft: `${item.depth * 20 + 16}px` }" 
+            @click="onFileItemClick(item)">
           <span class="item-icon">
             <template v-if="item.type === 'folder'">{{ item.isExpanded ? '▼' : '▶' }}</template>
             <template v-else>📄</template>
@@ -201,17 +262,34 @@ const flattenedTree = computed(() => {
         </li>
       </ul>
     </div>
+
     <div class="chat-panel">
       <div class="chat-container">
-        <div v-if="error" class="message"><p class="error-message">{{ error }}</p></div>
-        <div v-else-if="logs.length === 0" class="message"><p class="loading-message">표시할 로그가 없습니다.</p></div>
+        <div v-if="error" class="message">
+          <p class="error-message">{{ error }}</p>
+        </div>
+        <div v-else-if="logs.length === 0" class="message">
+          <p class="loading-message">표시할 로그가 없습니다.</p>
+        </div>
         <div v-else>
-          <div v-for="(log, index) in logs" :key="index" :class="['message', `role-${log.role}`]">
-            <div class="bubble"><div class="content">{{ log.content }}</div></div>
+          <div v-for="(log, index) in logs" 
+               :key="index" 
+               :class="['message', `role-${log.role}`]">
+            <div class="bubble">
+              <div class="content">
+                <template v-for="(part, pIndex) in processLogContent(log.content)" :key="pIndex">
+                  <pre v-if="part.type === 'code'">
+                    <code :class="`language-${part.lang}`" v-html="part.content"></code>
+                  </pre>
+                  <p v-else v-html="part.content"></p>
+                </template>
+              </div>
+            </div>
           </div>
         </div>
       </div>
     </div>
+
     <div class="ghost-panel"></div>
   </div>
 </template>
@@ -240,6 +318,7 @@ const flattenedTree = computed(() => {
 .file-list { list-style: none; padding: 0; margin: 0; overflow-y: auto; flex-grow: 1; user-select: none; }
 .file-item { display: flex; align-items: center; cursor: pointer; padding-top: 0.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid #e8e8e8; font-size: 0.9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; position: relative; }
 .file-item:hover { background-color: #eef5ff; }
+.file-item.active { background-color: #d4e8ff; }
 .item-icon { margin-right: 8px; font-size: 0.8em; width: 12px; text-align: center; }
 .item-name { flex-grow: 1; }
 .close-button { color: #ccc; font-weight: bold; cursor: pointer; padding: 0 8px; font-size: 1.2rem; line-height: 1; position: absolute; right: 5px; display: none; }
@@ -260,4 +339,43 @@ const flattenedTree = computed(() => {
 .content { white-space: pre-wrap; word-wrap: break-word; line-height: 1.6; }
 .error-message, .loading-message { text-align: center; padding: 2rem; color: #888; }
 .ghost-panel { width: 320px; flex-shrink: 0; }
+
+/* highlight.js 스타일 */
+pre code {
+  display: block;
+  overflow-x: auto;
+  padding: 1em;
+  background: #2d2d2d; /* 코드 블록 배경색 */
+  color: #ccc; /* 코드 텍스트 색상 */
+  border-radius: 8px;
+}
+
+.message.role-assistant .bubble pre code {
+  background-color: #2d2d2d; /* 어시스턴트 버블 내 코드 블록 배경색 */
+}
+
+.message.role-user .bubble pre code {
+  background-color: #3a3a3a; /* 사용자 버블 내 코드 블록 배경색 */
+}
+
+.content p {
+  margin-bottom: 1em; /* 텍스트 단락 간 간격 */
+}
+
+.content p:last-child {
+  margin-bottom: 0; /* 마지막 단락은 간격 없음 */
+}
+
+.content pre {
+  margin-top: 1em;
+  margin-bottom: 1em;
+}
+
+.content pre:first-child {
+  margin-top: 0;
+}
+
+.content pre:last-child {
+  margin-bottom: 0;
+}
 </style>
