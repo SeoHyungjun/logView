@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, nextTick } from 'vue';
+import { ref, computed, nextTick, Directive } from 'vue';
 import hljs from 'highlight.js';
 import 'highlight.js/styles/github-dark.css'; // 원하는 테마를 선택하세요
 
@@ -42,11 +42,7 @@ const loadJsonlFile = async (file: File) => {
     logs.value = content.split('\n').filter(line => line.trim() !== '').map(line => JSON.parse(line));
     const fileId = (file.webkitRelativePath || file.name);
     activeFileId.value = fileId.slice(0, fileId.indexOf(file.name) + file.name.length);
-    await nextTick(() => {
-      document.querySelectorAll('pre code').forEach((block) => {
-        hljs.highlightElement(block as HTMLElement);
-      });
-    });
+    
   } catch (e: any) {
     error.value = `파일을 파싱하는 중 오류 발생: ${e.message}`;
   }
@@ -186,6 +182,8 @@ const flattenedTree = computed(() => {
   return flat;
 });
 
+import { ref, computed, nextTick, watch } from 'vue';
+
 const processLogContent = computed(() => {
   return (content: string): LogPart[] => {
     const parts: LogPart[] = [];
@@ -208,6 +206,29 @@ const processLogContent = computed(() => {
     return parts;
   };
 });
+
+const vHighlight: Directive<HTMLElement, { content: string; lang?: string }> = {
+  mounted: (el, binding) => {
+    el.innerHTML = binding.value.content;
+    if (binding.value.lang) {
+      el.className = `language-${binding.value.lang}`;
+    }
+    nextTick(() => {
+      hljs.highlightElement(el);
+    });
+  },
+  updated: (el, binding) => {
+    el.innerHTML = binding.value.content;
+    if (binding.value.lang) {
+      el.className = `language-${binding.value.lang}`;
+    }
+    nextTick(() => {
+      hljs.highlightElement(el);
+    });
+  },
+};
+
+
 </script>
 
 <template>
@@ -279,7 +300,7 @@ const processLogContent = computed(() => {
               <div class="content">
                 <template v-for="(part, pIndex) in processLogContent(log.content)" :key="pIndex">
                   <pre v-if="part.type === 'code'">
-                    <code :class="`language-${part.lang}`" v-html="part.content"></code>
+                    <code v-highlight="{ content: part.content, lang: part.lang }"></code>
                   </pre>
                   <p v-else v-html="part.content"></p>
                 </template>
