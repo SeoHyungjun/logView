@@ -124,6 +124,21 @@ const onFileItemClick = (item: TreeItem) => {
   else if (item.file) { loadJsonlFile(item.file); }
 };
 
+const removeItem = (itemToRemove: TreeItem) => {
+  const remove = (items: TreeItem[]): TreeItem[] => {
+    return items.filter(item => {
+      if (item.id === itemToRemove.id) {
+        return false;
+      }
+      if (item.children) {
+        item.children = remove(item.children);
+      }
+      return true;
+    });
+  };
+  treeData.value = remove(treeData.value);
+};
+
 const flattenedTree = computed(() => {
   const flat: TreeItem[] = [];
   const traverse = (items: TreeItem[]) => {
@@ -179,6 +194,7 @@ const flattenedTree = computed(() => {
             <template v-else>📄</template>
           </span>
           <span class="item-name">{{ item.name }}</span>
+          <span class="close-button" @click.stop="removeItem(item)">×</span>
         </li>
       </ul>
     </div>
@@ -219,10 +235,13 @@ const flattenedTree = computed(() => {
 .file-panel { width: 320px; flex-shrink: 0; background-color: #f7f7f7; border-right: 1px solid #e0e0e0; display: flex; flex-direction: column; transition: background-color 0.3s; }
 .file-panel.is-dragging-over { background-color: #e8f0fe; }
 .file-list { list-style: none; padding: 0; margin: 0; overflow-y: auto; flex-grow: 1; user-select: none; }
-.file-item { display: flex; align-items: center; cursor: pointer; padding-top: 0.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid #e8e8e8; font-size: 0.9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.file-item { display: flex; align-items: center; cursor: pointer; padding-top: 0.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid #e8e8e8; font-size: 0.9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; position: relative; }
 .file-item:hover { background-color: #eef5ff; }
 .item-icon { margin-right: 8px; font-size: 0.8em; width: 12px; text-align: center; }
 .item-name { flex-grow: 1; }
+.close-button { color: #ccc; font-weight: bold; cursor: pointer; padding: 0 8px; font-size: 1.2rem; line-height: 1; position: absolute; right: 5px; display: none; }
+.file-item:hover .close-button { display: block; }
+.close-button:hover { color: #888; }
 .empty-list-message { color: #888; text-align: center; padding: 1rem; }
 .chat-panel { flex-grow: 1; overflow-y: auto; display: flex; justify-content: center; }
 .chat-container { width: 100%; max-width: 960px; padding: 2rem 1rem; box-sizing: border-box; }
