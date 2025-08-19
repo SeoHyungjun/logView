@@ -122,7 +122,7 @@ def get_files():
 @app.get("/api/logs/{file_path:path}")
 def get_log_content(file_path: str, session: int = Query(0, description="파일 내 대화 세션의 인덱스")):
     """
-    지정된 .jsonl 파일의 특정 세션(라인)을 읽어 대화 목록을 반환합니다.
+    지정된 .jsonl 파일의 특정 세션(라인)에 해당하는 전체 JSON 객체를 반환합니다.
     """
     safe_path = get_safe_path(file_path)
 
@@ -137,16 +137,7 @@ def get_log_content(file_path: str, session: int = Query(0, description="파일 
             raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
 
         session_data = json.loads(lines[session])
-        
-        # 가장 우선적으로 'accumulated_conversations'를 찾습니다.
-        if 'accumulated_conversations' in session_data:
-            return session_data['accumulated_conversations']
-        # 없다면 'conversation'을 찾습니다.
-        elif 'conversation' in session_data:
-            return session_data['conversation']
-        # 둘 다 없다면 전체 데이터를 그대로 반환합니다.
-        else:
-            return session_data
+        return session_data
 
     except json.JSONDecodeError:
         raise HTTPException(status_code=500, detail="로그 파일의 형식이 잘못되었습니다.")

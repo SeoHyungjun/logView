@@ -12,7 +12,7 @@ interface TreeItem {
   depth: number;
   isExpanded: boolean;
   children: TreeItem[];
-  sessionIndex?: number; // 세션 타입일 경우에만 존재
+  sessionIndex?: number;
 }
 
 interface LogPart {
@@ -21,8 +21,14 @@ interface LogPart {
   lang?: string;
 }
 
+interface SessionData {
+  accumulated_conversations: any[];
+  expected_results: string[];
+  [key: string]: any;
+}
+
 // --- 상태 관리 ---
-const logs = ref<any[]>([]);
+const activeSessionData = ref<SessionData | null>(null);
 const error = ref<string | null>(null);
 const treeData = ref<TreeItem[]>([]);
 const isDraggingOver = ref(false);
@@ -33,6 +39,8 @@ const activeSessionId = ref<string | null>(null);
 const isLoading = ref(false);
 
 const API_BASE_URL = 'http://localhost:8000';
+
+const logs = computed(() => activeSessionData.value?.accumulated_conversations || []);
 
 // --- API 통신 ---
 const fetchTree = async () => {
@@ -55,14 +63,14 @@ const fetchLogContent = async (item: TreeItem) => {
   try {
     isLoading.value = true;
     error.value = null;
-    logs.value = [];
+    activeSessionData.value = null;
     const response = await fetch(`${API_BASE_URL}/api/logs/${item.path}?session=${item.sessionIndex}`);
     if (!response.ok) throw new Error(`로그 파일을 불러오는 데 실패했습니다: ${item.name}`);
-    logs.value = await response.json();
+    activeSessionData.value = await response.json();
     activeSessionId.value = item.id;
   } catch (e: any) {
     error.value = e.message;
-    logs.value = [];
+    activeSessionData.value = null;
   } finally {
     isLoading.value = false;
   }
@@ -70,35 +78,24 @@ const fetchLogContent = async (item: TreeItem) => {
 
 const uploadFiles = async (files: File[]) => {
   if (files.length === 0) return;
-
   const formData = new FormData();
   const jsonlFiles = files.filter(file => file.name.endsWith('.jsonl'));
-
   if (jsonlFiles.length === 0) {
     error.value = "선택된 파일이나 폴더에 .jsonl 파일이 없습니다.";
     return;
   }
-
   jsonlFiles.forEach(file => {
     const filePath = (file as any).webkitRelativePath || file.name;
     formData.append('files', file, filePath);
   });
-
   try {
     isLoading.value = true;
     error.value = null;
-    const response = await fetch(`${API_BASE_URL}/api/upload`, {
-      method: 'POST',
-      body: formData,
-    });
+    const response = await fetch(`${API_BASE_URL}/api/upload`, { method: 'POST', body: formData });
     if (!response.ok) throw new Error('파일 업로드에 실패했습니다.');
     await fetchTree();
-
     const firstSession = findFirstSession(treeData.value);
-    if (firstSession) {
-      await fetchLogContent(firstSession);
-    }
-
+    if (firstSession) await fetchLogContent(firstSession);
   } catch (e: any) {
     error.value = e.message;
   } finally {
@@ -108,27 +105,19 @@ const uploadFiles = async (files: File[]) => {
 
 const deleteItem = async (item: TreeItem) => {
   if (!confirm(`'${item.name}'을(를) 정말 삭제하시겠습니까?`)) return;
-
   try {
     isLoading.value = true;
     error.value = null;
-    const response = await fetch(`${API_BASE_URL}/api/files/${item.path}`, {
-      method: 'DELETE',
-    });
+    const response = await fetch(`${API_BASE_URL}/api/files/${item.path}`, { method: 'DELETE' });
     if (!response.ok) throw new Error('삭제에 실패했습니다.');
-    
-    const wasActive = item.id === activeSessionId.value || (activeSessionId.value && activeSessionId.value.startsWith(item.id));
+    const wasActive = activeSessionId.value?.startsWith(item.id);
     await fetchTree();
-
     if (wasActive) {
-      logs.value = [];
+      activeSessionData.value = null;
       activeSessionId.value = null;
       const firstSession = findFirstSession(treeData.value);
-      if (firstSession) {
-        await fetchLogContent(firstSession);
-      }
+      if (firstSession) await fetchLogContent(firstSession);
     }
-
   } catch (e: any) {
     error.value = e.message;
   } finally {
@@ -138,12 +127,7 @@ const deleteItem = async (item: TreeItem) => {
 
 // --- 유틸리티 함수 ---
 const enhanceTree = (nodes: any[], depth = 0): TreeItem[] => {
-  return nodes.map(node => ({
-    ...node,
-    depth,
-    isExpanded: true,
-    children: node.children ? enhanceTree(node.children, depth + 1) : [],
-  }));
+  return nodes.map(node => ({ ...node, depth, isExpanded: true, children: node.children ? enhanceTree(node.children, depth + 1) : [] }));
 };
 
 const findFirstSession = (nodes: TreeItem[]): TreeItem | null => {
@@ -162,14 +146,18 @@ const flattenedTree = computed(() => {
   const traverse = (items: TreeItem[]) => {
     items.forEach(item => {
       flat.push(item);
-      if (item.isExpanded && item.children) {
-        traverse(item.children);
-      }
+      if (item.isExpanded && item.children) traverse(item.children);
     });
   };
   traverse(treeData.value);
   return flat;
 });
+
+const getExpectedResultFor = (currentIndex: number) => {
+  if (!activeSessionData.value || !activeSessionData.value.expected_results) return null;
+  const assistantMsgIndex = logs.value.slice(0, currentIndex).filter(l => l.role === 'assistant').length;
+  return activeSessionData.value.expected_results[assistantMsgIndex];
+};
 
 // --- 이벤트 핸들러 ---
 const handleFileSelect = (event: Event) => {
@@ -188,8 +176,8 @@ const traverseFileTree = async (item: any): Promise<File[]> => {
     if (entry.isFile) {
       const file = await new Promise<File>(resolve => entry.file(resolve));
       if (file.name.endsWith('.jsonl')) {
-         Object.defineProperty(file, 'webkitRelativePath', { value: entry.fullPath.substring(1) });
-         files.push(file);
+        Object.defineProperty(file, 'webkitRelativePath', { value: entry.fullPath.substring(1) });
+        files.push(file);
       }
     } else if (entry.isDirectory) {
       const reader = entry.createReader();
@@ -208,15 +196,13 @@ const handleDrop = async (event: DragEvent) => {
     const allFiles: File[] = [];
     const items = Array.from(event.dataTransfer.items);
     for (const item of items) {
-        const entry = item.webkitGetAsEntry();
-        if (entry) {
-            const files = await traverseFileTree(entry);
-            allFiles.push(...files);
-        }
+      const entry = item.webkitGetAsEntry();
+      if (entry) {
+        const files = await traverseFileTree(entry);
+        allFiles.push(...files);
+      }
     }
-    if (allFiles.length > 0) {
-        await uploadFiles(allFiles);
-    }
+    if (allFiles.length > 0) await uploadFiles(allFiles);
   }
 };
 
@@ -229,9 +215,7 @@ const onFileItemClick = (item: TreeItem) => {
 };
 
 // --- 생명주기 훅 ---
-onMounted(() => {
-  fetchTree();
-});
+onMounted(() => { fetchTree(); });
 
 // --- 코드 하이라이팅 ---
 const processLogContent = computed(() => {
@@ -241,19 +225,13 @@ const processLogContent = computed(() => {
     const codeBlockRegex = /```(\w+)?\n([\s\S]*?)\n```/g;
     let lastIndex = 0;
     let match;
-
     while ((match = codeBlockRegex.exec(content)) !== null) {
       const [fullMatch, lang, code] = match;
-      if (match.index > lastIndex) {
-        parts.push({ type: 'text', content: content.substring(lastIndex, match.index) });
-      }
+      if (match.index > lastIndex) parts.push({ type: 'text', content: content.substring(lastIndex, match.index) });
       parts.push({ type: 'code', content: code, lang: lang || 'plaintext' });
       lastIndex = match.index + fullMatch.length;
     }
-
-    if (lastIndex < content.length) {
-      parts.push({ type: 'text', content: content.substring(lastIndex) });
-    }
+    if (lastIndex < content.length) parts.push({ type: 'text', content: content.substring(lastIndex) });
     return parts;
   };
 });
@@ -265,31 +243,20 @@ const vHighlight: Directive<HTMLElement, { content: string; lang?: string }> = {
 
 const highlight = (el: HTMLElement, binding: { content: string; lang?: string }) => {
   el.innerHTML = binding.content;
-  if (binding.lang) {
-    el.className = `language-${binding.lang}`;
-  }
-  nextTick(() => {
-    hljs.highlightElement(el);
-  });
+  if (binding.lang) el.className = `language-${binding.lang}`;
+  nextTick(() => { hljs.highlightElement(el); });
 };
 
 </script>
 
 <template>
-  <div v-if="treeData.length === 0 && !isLoading"
-       class="init-page-container"
-       @dragover.prevent="isDraggingOver = true"
-       @dragleave.prevent="isDraggingOver = false"
-       @drop="handleDrop">
+  <div v-if="treeData.length === 0 && !isLoading" class="init-page-container" @dragover.prevent="isDraggingOver = true" @dragleave.prevent="isDraggingOver = false" @drop="handleDrop">
     <div class="init-content-wrapper">
       <h1 class="init-title">Log Viewer</h1>
       <p class="init-description">JSONL 형식의 로그 파일을 위한 간단한 뷰어입니다.</p>
       <div :class="['drop-zone', { 'is-dragging-over': isDraggingOver }]">
         <div class="drop-zone-content">
-          <svg width="48" height="48" viewBox="0 0 16 16">
-            <path fill="currentColor" d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/>
-            <path fill="currentColor" d="M7.646 1.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1-.708.708L8.5 2.707V11.5a.5.5 0 0 1-1 0V2.707L5.354 4.854a.5.5 0 1 1-.708-.708l3-3z"/>
-          </svg>
+          <svg width="48" height="48" viewBox="0 0 16 16"><path fill="currentColor" d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/><path fill="currentColor" d="M7.646 1.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1-.708.708L8.5 2.707V11.5a.5.5 0 0 1-1 0V2.707L5.354 4.854a.5.5 0 1 1-.708-.708l3-3z"/></svg>
           <p>여기에 .jsonl 파일이나 폴더를 드래그 앤 드롭하세요.</p>
           <p class="or-text">또는</p>
           <div class="button-group">
@@ -304,22 +271,10 @@ const highlight = (el: HTMLElement, binding: { content: string; lang?: string })
   </div>
 
   <div v-else class="app-layout">
-    <div 
-      class="file-panel"
-      :class="{ 'is-dragging-over': isDraggingOverPanel }"
-      @dragover.prevent="isDraggingOverPanel = true"
-      @dragleave.prevent="isDraggingOverPanel = false"
-      @drop="handleDrop">
+    <div class="file-panel" :class="{ 'is-dragging-over': isDraggingOverPanel }" @dragover.prevent="isDraggingOverPanel = true" @dragleave.prevent="isDraggingOverPanel = false" @drop="handleDrop">
       <ul class="file-list">
-        <li v-if="flattenedTree.length === 0 && !isLoading" class="empty-list-message">
-            업로드된 파일이 없습니다.
-        </li>
-        <li v-for="item in flattenedTree" 
-            :key="item.id" 
-            class="file-item" 
-            :class="{ 'active': item.id === activeSessionId }" 
-            :style="{ paddingLeft: `${item.depth * 20 + 16}px` }" 
-            @click="onFileItemClick(item)">
+        <li v-if="flattenedTree.length === 0 && !isLoading" class="empty-list-message">업로드된 파일이 없습니다.</li>
+        <li v-for="item in flattenedTree" :key="item.id" class="file-item" :class="{ 'active': item.id === activeSessionId }" :style="{ paddingLeft: `${item.depth * 20 + 16}px` }" @click="onFileItemClick(item)">
           <span class="item-icon">
             <template v-if="item.type === 'folder'">{{ item.isExpanded ? '▼' : '▶' }}</template>
             <template v-else-if="item.type === 'file'">{{ item.isExpanded ? '▼' : '▶' }}</template>
@@ -334,22 +289,12 @@ const highlight = (el: HTMLElement, binding: { content: string; lang?: string })
 
     <div class="chat-panel">
       <div class="chat-container">
-        <div v-if="isLoading" class="message">
-          <p class="loading-message">로딩 중...</p>
-        </div>
-        <div v-else-if="error" class="message">
-          <p class="error-message">{{ error }}</p>
-        </div>
-        <div v-else-if="logs.length === 0 && flattenedTree.length > 0" class="message">
-          <p class="loading-message">왼쪽 목록에서 대화 세션을 선택하세요.</p>
-        </div>
-         <div v-else-if="logs.length === 0 && flattenedTree.length === 0" class="message">
-          <p class="loading-message">표시할 로그가 없습니다. 파일을 업로드하세요.</p>
-        </div>
+        <div v-if="isLoading" class="message"><p class="loading-message">로딩 중...</p></div>
+        <div v-else-if="error" class="message"><p class="error-message">{{ error }}</p></div>
+        <div v-else-if="logs.length === 0 && flattenedTree.length > 0" class="message"><p class="loading-message">왼쪽 목록에서 대화 세션을 선택하세요.</p></div>
+        <div v-else-if="logs.length === 0 && flattenedTree.length === 0" class="message"><p class="loading-message">표시할 로그가 없습니다. 파일을 업로드하세요.</p></div>
         <div v-else>
-          <div v-for="(log, index) in logs" 
-               :key="index" 
-               :class="['message', `role-${log.role}`]">
+          <div v-for="(log, index) in logs" :key="index" :class="['message', `role-${log.role}`]">
             <div class="bubble">
               <div class="content">
                 <template v-for="(part, pIndex) in processLogContent(log.content)" :key="pIndex">
@@ -357,6 +302,10 @@ const highlight = (el: HTMLElement, binding: { content: string; lang?: string })
                   <p v-else v-html="part.content.replace(/\n/g, '<br>')"></p>
                 </template>
               </div>
+            </div>
+            <div v-if="log.role === 'assistant'" class="expected-result">
+              <div class="expected-title">Expected Result</div>
+              <div class="expected-content">{{ getExpectedResultFor(index) }}</div>
             </div>
           </div>
         </div>
@@ -399,14 +348,14 @@ const highlight = (el: HTMLElement, binding: { content: string; lang?: string })
 .chat-panel { flex-grow: 1; overflow-y: auto; display: flex; justify-content: center; }
 .chat-container { width: 100%; max-width: 960px; padding: 2rem 1rem; box-sizing: border-box; }
 .message + .message { margin-top: 1.5rem; }
-.message.role-user + .message.role-assistant { margin-top: 0.75rem; }
+.message.role-user + .message.role-assistant { margin-top: 2.5rem; }
 .message.role-assistant + .message.role-user { margin-top: 2.5rem; }
-.message { display: flex; }
-.message.role-user { justify-content: flex-end; }
-.message.role-assistant { justify-content: flex-start; }
-.bubble { padding: 0.8rem 1.2rem; border-radius: 1.2rem; max-width: 85%; }
+.message { display: flex; flex-direction: column; }
+.message.role-user { align-items: flex-end; }
+.message.role-assistant { align-items: flex-start; }
+.bubble { padding: 0.8rem 1.2rem; border-radius: 1.2rem; max-width: 85%; display: inline-block;}
 .message.role-user .bubble { background-color: #f0f0f0; }
-.message.role-assistant .bubble { background-color: transparent; text-align: left; }
+.message.role-assistant .bubble { background-color: transparent; border: 1px solid #e0e0e0;}
 .content { white-space: pre-wrap; word-wrap: break-word; line-height: 1.6; }
 .error-message, .loading-message { text-align: center; padding: 2rem; color: #888; }
 .ghost-panel { width: 320px; flex-shrink: 0; }
@@ -418,4 +367,24 @@ pre code { display: block; overflow-x: auto; padding: 1em; background: #2d2d2d; 
 .content pre { margin-top: 1em; margin-bottom: 1em; }
 .content pre:first-child { margin-top: 0; }
 .content pre:last-child { margin-bottom: 0; }
+
+.expected-result {
+  border: 1px solid #a2d2ff;
+  background-color: #f0f8ff;
+  border-radius: 8px;
+  padding: 0.8rem 1.2rem;
+  margin-top: 0.5rem;
+  max-width: 85%;
+  font-size: 0.9em;
+}
+.expected-title {
+  font-weight: bold;
+  color: #0077cc;
+  margin-bottom: 0.5rem;
+}
+.expected-content {
+  color: #333;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
 </style>
