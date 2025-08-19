@@ -1,17 +1,17 @@
 <script setup lang="ts">
-import { ref, computed, nextTick, Directive } from 'vue';
+import { ref, computed, onMounted, nextTick, Directive } from 'vue';
 import hljs from 'highlight.js';
-import 'highlight.js/styles/github-dark.css'; // 원하는 테마를 선택하세요
+import 'highlight.js/styles/github-dark.css';
 
 // --- 타입 정의 ---
 interface TreeItem {
   id: string;
   name: string;
   type: 'file' | 'folder';
+  path: string; // 백엔드에서 받은 상대 경로
   depth: number;
   isExpanded: boolean;
   children: TreeItem[];
-  file?: File;
 }
 
 interface LogPart {
@@ -21,74 +21,153 @@ interface LogPart {
 }
 
 // --- 상태 관리 ---
-const appStarted = ref(false);
 const logs = ref<any[]>([]);
 const error = ref<string | null>(null);
 const treeData = ref<TreeItem[]>([]);
 const isDraggingOver = ref(false);
-const isDraggingOverPanel = ref(false); // 패널 드래그 상태
+const isDraggingOverPanel = ref(false);
 const fileInput = ref<HTMLInputElement | null>(null);
 const folderInput = ref<HTMLInputElement | null>(null);
 const activeFileId = ref<string | null>(null);
+const isLoading = ref(false); // 로딩 상태 추가
 
-// --- 핵심 로직 ---
-const startApp = () => { appStarted.value = true; };
+const API_BASE_URL = 'http://localhost:8000';
 
-const loadJsonlFile = async (file: File) => {
+// --- API 통신 ---
+const fetchTree = async () => {
   try {
+    isLoading.value = true;
     error.value = null;
-    logs.value = [];
-    const content = await file.text();
-    logs.value = content.split('\n').filter(line => line.trim() !== '').map(line => JSON.parse(line));
-    const fileId = (file.webkitRelativePath || file.name);
-    activeFileId.value = fileId.slice(0, fileId.indexOf(file.name) + file.name.length);
-    
+    const response = await fetch(`${API_BASE_URL}/api/files`);
+    if (!response.ok) throw new Error('파일 목록을 불러오는 데 실패했습니다.');
+    const rawTree = await response.json();
+    // 백엔드에서 받은 트리에 UI 상태(depth, isExpanded) 추가
+    treeData.value = enhanceTree(rawTree);
   } catch (e: any) {
-    error.value = `파일을 파싱하는 중 오류 발생: ${e.message}`;
+    error.value = e.message;
+  } finally {
+    isLoading.value = false;
   }
 };
 
-const buildTree = (files: File[]): TreeItem[] => {
-  const root: { [key: string]: any } = { children: {} };
-  files.forEach(file => {
-    const pathParts = (file.webkitRelativePath || file.name).split('/');
-    let currentLevel = root.children;
-    pathParts.forEach((part, index) => {
-      if (!part) return;
-      const isFolder = index < pathParts.length - 1;
-      if (!currentLevel[part]) {
-        currentLevel[part] = {
-          id: (file.webkitRelativePath || file.name).slice(0, (file.webkitRelativePath || file.name).indexOf(part) + part.length),
-          name: part, type: isFolder ? 'folder' : 'file', depth: index,
-          isExpanded: true, children: isFolder ? {} : undefined, file: isFolder ? undefined : file,
-        };
-      }
-      if (isFolder) { currentLevel = currentLevel[part].children; }
-    });
-  });
-  const objectToTree = (node: { [key: string]: TreeItem }): TreeItem[] => {
-    return Object.values(node).map(child => ({ ...child, children: child.children ? objectToTree(child.children as any) : [] }));
-  };
-  return objectToTree(root.children);
+const fetchLogContent = async (item: TreeItem) => {
+  try {
+    isLoading.value = true;
+    error.value = null;
+    logs.value = [];
+    const response = await fetch(`${API_BASE_URL}/api/logs/${item.path}`);
+    if (!response.ok) throw new Error(`로그 파일을 불러오는 데 실패했습니다: ${item.name}`);
+    logs.value = await response.json();
+    activeFileId.value = item.id;
+  } catch (e: any) {
+    error.value = e.message;
+  } finally {
+    isLoading.value = false;
+  }
 };
 
-const processFiles = async (files: File[]) => {
+const uploadFiles = async (files: File[]) => {
   if (files.length === 0) return;
-  const jsonlFiles = Array.from(files).filter(file => file.name.endsWith('.jsonl'));
+
+  const formData = new FormData();
+  const jsonlFiles = files.filter(file => file.name.endsWith('.jsonl'));
 
   if (jsonlFiles.length === 0) {
     error.value = "선택된 파일이나 폴더에 .jsonl 파일이 없습니다.";
-    if (!appStarted.value) { startApp(); }
     return;
   }
 
-  const newTreeData = buildTree(jsonlFiles);
-  treeData.value = [...newTreeData, ...treeData.value];
+  jsonlFiles.forEach(file => {
+    // file.webkitRelativePath가 있어야 백엔드에서 폴더 구조를 복원할 수 있습니다.
+    const filePath = (file as any).webkitRelativePath || file.name;
+    formData.append('files', file, filePath);
+  });
 
-  if (jsonlFiles.length > 0) {
-    await loadJsonlFile(jsonlFiles[0]);
+  try {
+    isLoading.value = true;
+    error.value = null;
+    const response = await fetch(`${API_BASE_URL}/api/upload`, {
+      method: 'POST',
+      body: formData,
+    });
+    if (!response.ok) throw new Error('파일 업로드에 실패했습니다.');
+    await fetchTree(); // 업로드 후 트리 새로고침
+
+    // 업로드 후 첫번째 파일을 자동으로 엽니다.
+    const firstFile = flattenedTree.value.find(item => item.type === 'file');
+    if (firstFile) {
+      await fetchLogContent(firstFile);
+    }
+
+  } catch (e: any) {
+    error.value = e.message;
+  } finally {
+    isLoading.value = false;
   }
-  if (!appStarted.value) { startApp(); }
+};
+
+const deleteItem = async (item: TreeItem) => {
+  if (!confirm(`'${item.name}'을(를) 정말 삭제하시겠습니까?`)) return;
+
+  try {
+    isLoading.value = true;
+    error.value = null;
+    const response = await fetch(`${API_BASE_URL}/api/files/${item.path}`, {
+      method: 'DELETE',
+    });
+    if (!response.ok) throw new Error('삭제에 실패했습니다.');
+    
+    const wasActive = item.id === activeFileId.value;
+    await fetchTree(); // 삭제 후 트리 새로고침
+
+    if (wasActive) {
+      logs.value = [];
+      activeFileId.value = null;
+      // 다른 파일이 있다면 첫번째 파일을 연다
+      const firstFile = flattenedTree.value.find(f => f.type === 'file');
+      if (firstFile) {
+        await fetchLogContent(firstFile);
+      }
+    }
+
+  } catch (e: any) {
+    error.value = e.message;
+  } finally {
+    isLoading.value = false;
+  }
+};
+
+// --- 유틸리티 함수 ---
+const enhanceTree = (nodes: any[], depth = 0): TreeItem[] => {
+  return nodes.map(node => ({
+    ...node,
+    depth,
+    isExpanded: true, // 기본적으로 모든 폴더를 확장된 상태로 설정
+    children: node.children ? enhanceTree(node.children, depth + 1) : [],
+  }));
+};
+
+const flattenedTree = computed(() => {
+  const flat: TreeItem[] = [];
+  const traverse = (items: TreeItem[]) => {
+    items.forEach(item => {
+      flat.push(item);
+      if (item.isExpanded && item.children) {
+        traverse(item.children);
+      }
+    });
+  };
+  traverse(treeData.value);
+  return flat;
+});
+
+// --- 이벤트 핸들러 ---
+const handleFileSelect = (event: Event) => {
+  const input = event.target as HTMLInputElement;
+  if (input.files) {
+    uploadFiles(Array.from(input.files));
+    input.value = ''; // 같은 파일을 다시 선택할 수 있도록 초기화
+  }
 };
 
 const traverseFileTree = async (item: any): Promise<File[]> => {
@@ -98,8 +177,10 @@ const traverseFileTree = async (item: any): Promise<File[]> => {
     const entry = queue.shift();
     if (entry.isFile) {
       const file = await new Promise<File>(resolve => entry.file(resolve));
-      Object.defineProperty(file, 'webkitRelativePath', { value: entry.fullPath.substring(1) });
-      files.push(file);
+      if (file.name.endsWith('.jsonl')) {
+         Object.defineProperty(file, 'webkitRelativePath', { value: entry.fullPath.substring(1) });
+         files.push(file);
+      }
     } else if (entry.isDirectory) {
       const reader = entry.createReader();
       const entries = await new Promise<any[]>(resolve => reader.readEntries(resolve));
@@ -109,81 +190,40 @@ const traverseFileTree = async (item: any): Promise<File[]> => {
   return files;
 };
 
-// --- 이벤트 핸들러 ---
-const handleFileSelect = (event: Event) => {
-  const input = event.target as HTMLInputElement;
-  if (input.files) processFiles(Array.from(input.files));
-};
-
-const handleFolderSelect = (event: Event) => {
-  const input = event.target as HTMLInputElement;
-  if (input.files) processFiles(Array.from(input.files));
-};
-
 const handleDrop = async (event: DragEvent) => {
   event.preventDefault();
   isDraggingOver.value = false;
   isDraggingOverPanel.value = false;
   if (event.dataTransfer?.items) {
-    const entry = event.dataTransfer.items[0].webkitGetAsEntry();
-    const files = await traverseFileTree(entry);
-    processFiles(files);
+    const allFiles: File[] = [];
+    const items = Array.from(event.dataTransfer.items);
+    for (const item of items) {
+        const entry = item.webkitGetAsEntry();
+        if (entry) {
+            const files = await traverseFileTree(entry);
+            allFiles.push(...files);
+        }
+    }
+    if (allFiles.length > 0) {
+        await uploadFiles(allFiles);
+    }
   }
 };
 
 const onFileItemClick = (item: TreeItem) => {
   if (item.type === 'folder') {
     item.isExpanded = !item.isExpanded;
-  } else if (item.file) {
-    loadJsonlFile(item.file);
-    activeFileId.value = item.id;
+  } else {
+    fetchLogContent(item);
   }
 };
 
-const removeItem = (itemToRemove: TreeItem) => {
-  const wasActive = itemToRemove.id === activeFileId.value;
-  const remove = (items: TreeItem[]): TreeItem[] => {
-    return items.filter(item => {
-      if (item.id === itemToRemove.id) {
-        return false;
-      }
-      if (item.children) {
-        item.children = remove(item.children);
-      }
-      return true;
-    });
-  };
-  treeData.value = remove(treeData.value);
-
-  if (treeData.value.length === 0) {
-    appStarted.value = false;
-    activeFileId.value = null;
-  } else if (wasActive) {
-    const firstFile = flattenedTree.value.find(item => item.type === 'file');
-    if (firstFile && firstFile.file) {
-      loadJsonlFile(firstFile.file);
-      activeFileId.value = firstFile.id;
-    } else {
-      logs.value = [];
-      activeFileId.value = null;
-    }
-  }
-};
-
-const flattenedTree = computed(() => {
-  const flat: TreeItem[] = [];
-  const traverse = (items: TreeItem[]) => {
-    items.forEach(item => {
-      flat.push(item);
-      if (item.isExpanded && item.children) { traverse(item.children); }
-    });
-  };
-  traverse(treeData.value);
-  return flat;
+// --- 생명주기 훅 ---
+onMounted(() => {
+  fetchTree();
 });
 
-import { ref, computed, nextTick, watch } from 'vue';
-
+// --- 코드 하이라이팅 ---
 const processLogContent = computed(() => {
   return (content: string): LogPart[] => {
     const parts: LogPart[] = [];
@@ -208,32 +248,25 @@ const processLogContent = computed(() => {
 });
 
 const vHighlight: Directive<HTMLElement, { content: string; lang?: string }> = {
-  mounted: (el, binding) => {
-    el.innerHTML = binding.value.content;
-    if (binding.value.lang) {
-      el.className = `language-${binding.value.lang}`;
-    }
-    nextTick(() => {
-      hljs.highlightElement(el);
-    });
-  },
-  updated: (el, binding) => {
-    el.innerHTML = binding.value.content;
-    if (binding.value.lang) {
-      el.className = `language-${binding.value.lang}`;
-    }
-    nextTick(() => {
-      hljs.highlightElement(el);
-    });
-  },
+  mounted: (el, binding) => highlight(el, binding.value),
+  updated: (el, binding) => highlight(el, binding.value),
 };
 
+const highlight = (el: HTMLElement, binding: { content: string; lang?: string }) => {
+  el.innerHTML = binding.content;
+  if (binding.lang) {
+    el.className = `language-${binding.lang}`;
+  }
+  nextTick(() => {
+    hljs.highlightElement(el);
+  });
+};
 
 </script>
 
 <template>
-  <!-- 1. 초기 시작 화면 -->
-  <div v-if="!appStarted" 
+  <!-- 1. 초기 시작 화면 (파일이 없을 때) -->
+  <div v-if="treeData.length === 0 && !isLoading"
        class="init-page-container"
        @dragover.prevent="isDraggingOver = true"
        @dragleave.prevent="isDraggingOver = false"
@@ -255,8 +288,8 @@ const vHighlight: Directive<HTMLElement, { content: string; lang?: string }> = {
           </div>
         </div>
       </div>
-      <input type="file" ref="fileInput" @change="handleFileSelect" style="display: none;" accept=".jsonl" />
-      <input type="file" ref="folderInput" webkitdirectory directory multiple @change="handleFolderSelect" style="display: none;" />
+      <input type="file" ref="fileInput" @change="handleFileSelect" style="display: none;" multiple accept=".jsonl" />
+      <input type="file" ref="folderInput" @change="handleFileSelect" style="display: none;" webkitdirectory />
     </div>
   </div>
 
@@ -268,6 +301,9 @@ const vHighlight: Directive<HTMLElement, { content: string; lang?: string }> = {
       @dragleave.prevent="isDraggingOverPanel = false"
       @drop="handleDrop">
       <ul class="file-list">
+        <li v-if="flattenedTree.length === 0 && !isLoading" class="empty-list-message">
+            업로드된 파일이 없습니다.
+        </li>
         <li v-for="item in flattenedTree" 
             :key="item.id" 
             class="file-item" 
@@ -279,18 +315,24 @@ const vHighlight: Directive<HTMLElement, { content: string; lang?: string }> = {
             <template v-else>📄</template>
           </span>
           <span class="item-name">{{ item.name }}</span>
-          <span class="close-button" @click.stop="removeItem(item)">×</span>
+          <span class="close-button" @click.stop="deleteItem(item)">×</span>
         </li>
       </ul>
     </div>
 
     <div class="chat-panel">
       <div class="chat-container">
-        <div v-if="error" class="message">
+        <div v-if="isLoading" class="message">
+          <p class="loading-message">로딩 중...</p>
+        </div>
+        <div v-else-if="error" class="message">
           <p class="error-message">{{ error }}</p>
         </div>
-        <div v-else-if="logs.length === 0" class="message">
-          <p class="loading-message">표시할 로그가 없습니다.</p>
+        <div v-else-if="logs.length === 0 && flattenedTree.length > 0" class="message">
+          <p class="loading-message">왼쪽 목록에서 파일을 선택하세요.</p>
+        </div>
+         <div v-else-if="logs.length === 0 && flattenedTree.length === 0" class="message">
+          <p class="loading-message">표시할 로그가 없습니다. 파일을 업로드하세요.</p>
         </div>
         <div v-else>
           <div v-for="(log, index) in logs" 
@@ -299,10 +341,8 @@ const vHighlight: Directive<HTMLElement, { content: string; lang?: string }> = {
             <div class="bubble">
               <div class="content">
                 <template v-for="(part, pIndex) in processLogContent(log.content)" :key="pIndex">
-                  <pre v-if="part.type === 'code'">
-                    <code v-highlight="{ content: part.content, lang: part.lang }"></code>
-                  </pre>
-                  <p v-else v-html="part.content"></p>
+                  <pre v-if="part.type === 'code'"><code v-highlight="{ content: part.content, lang: part.lang }"></code></pre>
+                  <p v-else v-html="part.content.replace(/\n/g, '<br>')"></p>
                 </template>
               </div>
             </div>
