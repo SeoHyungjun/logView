@@ -7,11 +7,12 @@ import 'highlight.js/styles/github-dark.css';
 interface TreeItem {
   id: string;
   name: string;
-  type: 'file' | 'folder';
-  path: string; // 백엔드에서 받은 상대 경로
+  type: 'file' | 'folder' | 'session';
+  path: string;
   depth: number;
   isExpanded: boolean;
   children: TreeItem[];
+  sessionIndex?: number; // 세션 타입일 경우에만 존재
 }
 
 interface LogPart {
@@ -28,8 +29,8 @@ const isDraggingOver = ref(false);
 const isDraggingOverPanel = ref(false);
 const fileInput = ref<HTMLInputElement | null>(null);
 const folderInput = ref<HTMLInputElement | null>(null);
-const activeFileId = ref<string | null>(null);
-const isLoading = ref(false); // 로딩 상태 추가
+const activeSessionId = ref<string | null>(null);
+const isLoading = ref(false);
 
 const API_BASE_URL = 'http://localhost:8000';
 
@@ -41,7 +42,6 @@ const fetchTree = async () => {
     const response = await fetch(`${API_BASE_URL}/api/files`);
     if (!response.ok) throw new Error('파일 목록을 불러오는 데 실패했습니다.');
     const rawTree = await response.json();
-    // 백엔드에서 받은 트리에 UI 상태(depth, isExpanded) 추가
     treeData.value = enhanceTree(rawTree);
   } catch (e: any) {
     error.value = e.message;
@@ -51,16 +51,18 @@ const fetchTree = async () => {
 };
 
 const fetchLogContent = async (item: TreeItem) => {
+  if (item.type !== 'session') return;
   try {
     isLoading.value = true;
     error.value = null;
     logs.value = [];
-    const response = await fetch(`${API_BASE_URL}/api/logs/${item.path}`);
+    const response = await fetch(`${API_BASE_URL}/api/logs/${item.path}?session=${item.sessionIndex}`);
     if (!response.ok) throw new Error(`로그 파일을 불러오는 데 실패했습니다: ${item.name}`);
     logs.value = await response.json();
-    activeFileId.value = item.id;
+    activeSessionId.value = item.id;
   } catch (e: any) {
     error.value = e.message;
+    logs.value = [];
   } finally {
     isLoading.value = false;
   }
@@ -78,7 +80,6 @@ const uploadFiles = async (files: File[]) => {
   }
 
   jsonlFiles.forEach(file => {
-    // file.webkitRelativePath가 있어야 백엔드에서 폴더 구조를 복원할 수 있습니다.
     const filePath = (file as any).webkitRelativePath || file.name;
     formData.append('files', file, filePath);
   });
@@ -91,12 +92,11 @@ const uploadFiles = async (files: File[]) => {
       body: formData,
     });
     if (!response.ok) throw new Error('파일 업로드에 실패했습니다.');
-    await fetchTree(); // 업로드 후 트리 새로고침
+    await fetchTree();
 
-    // 업로드 후 첫번째 파일을 자동으로 엽니다.
-    const firstFile = flattenedTree.value.find(item => item.type === 'file');
-    if (firstFile) {
-      await fetchLogContent(firstFile);
+    const firstSession = findFirstSession(treeData.value);
+    if (firstSession) {
+      await fetchLogContent(firstSession);
     }
 
   } catch (e: any) {
@@ -117,16 +117,15 @@ const deleteItem = async (item: TreeItem) => {
     });
     if (!response.ok) throw new Error('삭제에 실패했습니다.');
     
-    const wasActive = item.id === activeFileId.value;
-    await fetchTree(); // 삭제 후 트리 새로고침
+    const wasActive = item.id === activeSessionId.value || (activeSessionId.value && activeSessionId.value.startsWith(item.id));
+    await fetchTree();
 
     if (wasActive) {
       logs.value = [];
-      activeFileId.value = null;
-      // 다른 파일이 있다면 첫번째 파일을 연다
-      const firstFile = flattenedTree.value.find(f => f.type === 'file');
-      if (firstFile) {
-        await fetchLogContent(firstFile);
+      activeSessionId.value = null;
+      const firstSession = findFirstSession(treeData.value);
+      if (firstSession) {
+        await fetchLogContent(firstSession);
       }
     }
 
@@ -142,9 +141,20 @@ const enhanceTree = (nodes: any[], depth = 0): TreeItem[] => {
   return nodes.map(node => ({
     ...node,
     depth,
-    isExpanded: true, // 기본적으로 모든 폴더를 확장된 상태로 설정
+    isExpanded: true,
     children: node.children ? enhanceTree(node.children, depth + 1) : [],
   }));
+};
+
+const findFirstSession = (nodes: TreeItem[]): TreeItem | null => {
+  for (const node of nodes) {
+    if (node.type === 'session') return node;
+    if (node.children) {
+      const found = findFirstSession(node.children);
+      if (found) return found;
+    }
+  }
+  return null;
 };
 
 const flattenedTree = computed(() => {
@@ -166,7 +176,7 @@ const handleFileSelect = (event: Event) => {
   const input = event.target as HTMLInputElement;
   if (input.files) {
     uploadFiles(Array.from(input.files));
-    input.value = ''; // 같은 파일을 다시 선택할 수 있도록 초기화
+    input.value = '';
   }
 };
 
@@ -211,9 +221,9 @@ const handleDrop = async (event: DragEvent) => {
 };
 
 const onFileItemClick = (item: TreeItem) => {
-  if (item.type === 'folder') {
+  if (item.type === 'folder' || item.type === 'file') {
     item.isExpanded = !item.isExpanded;
-  } else {
+  } else if (item.type === 'session') {
     fetchLogContent(item);
   }
 };
@@ -226,6 +236,7 @@ onMounted(() => {
 // --- 코드 하이라이팅 ---
 const processLogContent = computed(() => {
   return (content: string): LogPart[] => {
+    if (typeof content !== 'string') return [];
     const parts: LogPart[] = [];
     const codeBlockRegex = /```(\w+)?\n([\s\S]*?)\n```/g;
     let lastIndex = 0;
@@ -265,7 +276,6 @@ const highlight = (el: HTMLElement, binding: { content: string; lang?: string })
 </script>
 
 <template>
-  <!-- 1. 초기 시작 화면 (파일이 없을 때) -->
   <div v-if="treeData.length === 0 && !isLoading"
        class="init-page-container"
        @dragover.prevent="isDraggingOver = true"
@@ -307,15 +317,17 @@ const highlight = (el: HTMLElement, binding: { content: string; lang?: string })
         <li v-for="item in flattenedTree" 
             :key="item.id" 
             class="file-item" 
-            :class="{ 'active': item.id === activeFileId }" 
+            :class="{ 'active': item.id === activeSessionId }" 
             :style="{ paddingLeft: `${item.depth * 20 + 16}px` }" 
             @click="onFileItemClick(item)">
           <span class="item-icon">
             <template v-if="item.type === 'folder'">{{ item.isExpanded ? '▼' : '▶' }}</template>
+            <template v-else-if="item.type === 'file'">{{ item.isExpanded ? '▼' : '▶' }}</template>
+            <template v-else-if="item.type === 'session'">💬</template>
             <template v-else>📄</template>
           </span>
           <span class="item-name">{{ item.name }}</span>
-          <span class="close-button" @click.stop="deleteItem(item)">×</span>
+          <span v-if="item.type !== 'session'" class="close-button" @click.stop="deleteItem(item)">×</span>
         </li>
       </ul>
     </div>
@@ -329,7 +341,7 @@ const highlight = (el: HTMLElement, binding: { content: string; lang?: string })
           <p class="error-message">{{ error }}</p>
         </div>
         <div v-else-if="logs.length === 0 && flattenedTree.length > 0" class="message">
-          <p class="loading-message">왼쪽 목록에서 파일을 선택하세요.</p>
+          <p class="loading-message">왼쪽 목록에서 대화 세션을 선택하세요.</p>
         </div>
          <div v-else-if="logs.length === 0 && flattenedTree.length === 0" class="message">
           <p class="loading-message">표시할 로그가 없습니다. 파일을 업로드하세요.</p>
@@ -356,7 +368,7 @@ const highlight = (el: HTMLElement, binding: { content: string; lang?: string })
 </template>
 
 <style>
-/* --- 초기 시작 화면 스타일 --- */
+/* 스타일은 이전과 동일합니다 */
 .init-page-container { display: flex; align-items: center; justify-content: center; height: 100vh; padding: 2rem; box-sizing: border-box; text-align: center; }
 .init-content-wrapper { max-width: 720px; width: 100%; }
 .init-title { font-size: 3.2rem; font-weight: 700; color: #2c3e50; margin-bottom: 1rem; }
@@ -371,8 +383,6 @@ const highlight = (el: HTMLElement, binding: { content: string; lang?: string })
 .select-button { background-color: white; color: #007aff; border: none; padding: 0.7rem 1.5rem; font-size: 1rem; font-weight: 500; cursor: pointer; transition: background-color 0.2s; }
 .select-button:hover { background-color: #f0f8ff; }
 .select-button:first-child { border-right: 1px solid #007aff; }
-
-/* --- 메인 앱 레이아웃 --- */
 .app-layout { display: flex; justify-content: space-between; height: 100vh; width: 100%; }
 .file-panel { width: 320px; flex-shrink: 0; background-color: #f7f7f7; border-right: 1px solid #e0e0e0; display: flex; flex-direction: column; transition: background-color 0.3s; }
 .file-panel.is-dragging-over { background-color: #e8f0fe; }
@@ -400,43 +410,12 @@ const highlight = (el: HTMLElement, binding: { content: string; lang?: string })
 .content { white-space: pre-wrap; word-wrap: break-word; line-height: 1.6; }
 .error-message, .loading-message { text-align: center; padding: 2rem; color: #888; }
 .ghost-panel { width: 320px; flex-shrink: 0; }
-
-/* highlight.js 스타일 */
-pre code {
-  display: block;
-  overflow-x: auto;
-  padding: 1em;
-  background: #2d2d2d; /* 코드 블록 배경색 */
-  color: #ccc; /* 코드 텍스트 색상 */
-  border-radius: 8px;
-}
-
-.message.role-assistant .bubble pre code {
-  background-color: #2d2d2d; /* 어시스턴트 버블 내 코드 블록 배경색 */
-}
-
-.message.role-user .bubble pre code {
-  background-color: #3a3a3a; /* 사용자 버블 내 코드 블록 배경색 */
-}
-
-.content p {
-  margin-bottom: 1em; /* 텍스트 단락 간 간격 */
-}
-
-.content p:last-child {
-  margin-bottom: 0; /* 마지막 단락은 간격 없음 */
-}
-
-.content pre {
-  margin-top: 1em;
-  margin-bottom: 1em;
-}
-
-.content pre:first-child {
-  margin-top: 0;
-}
-
-.content pre:last-child {
-  margin-bottom: 0;
-}
+pre code { display: block; overflow-x: auto; padding: 1em; background: #2d2d2d; color: #ccc; border-radius: 8px; }
+.message.role-assistant .bubble pre code { background-color: #2d2d2d; }
+.message.role-user .bubble pre code { background-color: #3a3a3a; }
+.content p { margin-bottom: 1em; }
+.content p:last-child { margin-bottom: 0; }
+.content pre { margin-top: 1em; margin-bottom: 1em; }
+.content pre:first-child { margin-top: 0; }
+.content pre:last-child { margin-bottom: 0; }
 </style>

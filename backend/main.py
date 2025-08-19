@@ -2,7 +2,7 @@ import json
 import os
 import shutil
 from pathlib import Path
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List
 
@@ -36,10 +36,8 @@ def get_safe_path(file_path: str) -> Path:
     디렉토리 순회 공격을 방지합니다.
     """
     base_path = Path(UPLOAD_DIRECTORY).resolve()
-    # 경로를 정규화하여 '..' 같은 부분을 처리합니다.
     requested_path = Path(os.path.join(UPLOAD_DIRECTORY, file_path)).resolve()
 
-    # 요청된 경로가 기본 업로드 디렉토리 내에 있는지 확인합니다.
     if not requested_path.is_relative_to(base_path):
         raise HTTPException(status_code=400, detail="안전하지 않은 파일 경로입니다.")
     
@@ -51,20 +49,14 @@ def get_safe_path(file_path: str) -> Path:
 async def upload_files(files: List[UploadFile] = File(...)):
     """
     프론트엔드에서 전송된 파일들을 받아 서버에 저장합니다.
-    파일의 상대 경로를 유지하여 폴더 구조를 그대로 저장합니다.
     """
     for file in files:
-        # 파일 경로에 '..' 이 포함되어 있으면 보안 위협으로 간주하고 차단
         if '..' in file.filename:
             raise HTTPException(status_code=400, detail=f"잘못된 파일명입니다: {file.filename}")
 
-        # file.filename에 webkitRelativePath가 포함되어 전달됩니다.
         save_path = Path(UPLOAD_DIRECTORY) / file.filename
-        
-        # 필요한 하위 디렉토리를 생성합니다.
         save_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # 파일을 저장합니다.
         with open(save_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
             
@@ -74,12 +66,12 @@ async def upload_files(files: List[UploadFile] = File(...)):
 def build_file_tree(directory: str):
     """
     지정된 디렉토리의 파일 구조를 재귀적으로 탐색하여 트리 형태의 객체로 만듭니다.
+    .jsonl 파일의 경우, 내부를 읽어 각 라인을 대화 세션으로 하는 하위 노드를 생성합니다.
     """
     tree = []
     base_path = Path(directory)
 
     for item in sorted(base_path.iterdir()):
-        # .DS_Store와 같은 시스템 파일을 무시합니다.
         if item.name.startswith('.'):
             continue
 
@@ -92,11 +84,27 @@ def build_file_tree(directory: str):
         if item.is_dir():
             node["type"] = "folder"
             node["children"] = build_file_tree(str(item))
-            # 폴더가 비어있지 않을 때만 트리에 추가
             if node["children"]:
                 tree.append(node)
         elif item.name.endswith('.jsonl'):
             node["type"] = "file"
+            sessions = []
+            try:
+                with open(item, "r", encoding="utf-8") as f:
+                    for i, line in enumerate(f):
+                        if line.strip():
+                            sessions.append({
+                                "id": f"{rel_path}:{i}",
+                                "name": f"Conversation {i}",
+                                "type": "session",
+                                "path": rel_path,
+                                "sessionIndex": i
+                            })
+            except Exception:
+                # 파일 읽기 실패 시 세션 목록은 비워둠
+                pass
+            
+            node["children"] = sessions
             tree.append(node)
             
     return tree
@@ -112,27 +120,38 @@ def get_files():
 
 
 @app.get("/api/logs/{file_path:path}")
-def get_log_content(file_path: str):
+def get_log_content(file_path: str, session: int = Query(0, description="파일 내 대화 세션의 인덱스")):
     """
-    지정된 .jsonl 파일의 내용을 읽어 파싱한 후 리스트로 반환합니다.
+    지정된 .jsonl 파일의 특정 세션(라인)을 읽어 대화 목록을 반환합니다.
     """
     safe_path = get_safe_path(file_path)
 
     if not safe_path.is_file():
         raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다.")
 
-    logs = []
     try:
         with open(safe_path, "r", encoding="utf-8") as f:
-            for line in f:
-                if line.strip():
-                    logs.append(json.loads(line))
+            lines = [line for line in f if line.strip()]
+        
+        if session >= len(lines):
+            raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
+
+        session_data = json.loads(lines[session])
+        
+        # 가장 우선적으로 'accumulated_conversations'를 찾습니다.
+        if 'accumulated_conversations' in session_data:
+            return session_data['accumulated_conversations']
+        # 없다면 'conversation'을 찾습니다.
+        elif 'conversation' in session_data:
+            return session_data['conversation']
+        # 둘 다 없다면 전체 데이터를 그대로 반환합니다.
+        else:
+            return session_data
+
     except json.JSONDecodeError:
         raise HTTPException(status_code=500, detail="로그 파일의 형식이 잘못되었습니다.")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"파일을 읽는 중 오류 발생: {e}")
-        
-    return logs
 
 @app.delete("/api/files/{file_path:path}")
 def delete_file_or_folder(file_path: str):
