@@ -24,6 +24,7 @@ interface LogPart {
 interface SessionData {
   accumulated_conversations: any[];
   expected_results: string[];
+  criteria: string[];
   [key: string]: any;
 }
 
@@ -153,10 +154,10 @@ const flattenedTree = computed(() => {
   return flat;
 });
 
-const getExpectedResultFor = (currentIndex: number) => {
-  if (!activeSessionData.value || !activeSessionData.value.expected_results) return null;
+const getAssistantTurnData = (currentIndex: number, dataKey: 'expected_results' | 'criteria') => {
+  if (!activeSessionData.value || !activeSessionData.value[dataKey]) return null;
   const assistantMsgIndex = logs.value.slice(0, currentIndex).filter(l => l.role === 'assistant').length;
-  return activeSessionData.value.expected_results[assistantMsgIndex];
+  return activeSessionData.value[dataKey][assistantMsgIndex];
 };
 
 // --- 이벤트 핸들러 ---
@@ -294,20 +295,29 @@ const highlight = (el: HTMLElement, binding: { content: string; lang?: string })
         <div v-else-if="logs.length === 0 && flattenedTree.length > 0" class="message"><p class="loading-message">왼쪽 목록에서 대화 세션을 선택하세요.</p></div>
         <div v-else-if="logs.length === 0 && flattenedTree.length === 0" class="message"><p class="loading-message">표시할 로그가 없습니다. 파일을 업로드하세요.</p></div>
         <div v-else>
-          <div v-for="(log, index) in logs" :key="index" :class="['message', `role-${log.role}`]">
-            <div class="bubble">
-              <div class="content">
-                <template v-for="(part, pIndex) in processLogContent(log.content)" :key="pIndex">
-                  <pre v-if="part.type === 'code'"><code v-highlight="{ content: part.content, lang: part.lang }"></code></pre>
-                  <p v-else v-html="part.content.replace(/\n/g, '<br>')"></p>
-                </template>
+          <template v-for="(log, index) in logs" :key="index">
+            <div :class="['message', `role-${log.role}`]">
+              <div class="bubble">
+                <div class="content">
+                  <template v-for="(part, pIndex) in processLogContent(log.content)" :key="pIndex">
+                    <pre v-if="part.type === 'code'"><code v-highlight="{ content: part.content, lang: part.lang }"></code></pre>
+                    <p v-else v-html="part.content.replace(/\n/g, '<br>')"></p>
+                  </template>
+                </div>
+              </div>
+              <div v-if="log.role === 'assistant'" class="assistant-extra">
+                <div class="expected-result">
+                  <div class="expected-title">Expected Result</div>
+                  <div class="expected-content">{{ getAssistantTurnData(index, 'expected_results') }}</div>
+                </div>
+                <div v-if="getAssistantTurnData(index, 'criteria')" class="criteria-result">
+                   <div class="criteria-title">Criteria</div>
+                   <div class="criteria-content">{{ getAssistantTurnData(index, 'criteria') }}</div>
+                </div>
               </div>
             </div>
-            <div v-if="log.role === 'assistant'" class="expected-result">
-              <div class="expected-title">Expected Result</div>
-              <div class="expected-content">{{ getExpectedResultFor(index) }}</div>
-            </div>
-          </div>
+            <hr v-if="log.role === 'assistant' && index < logs.length - 1" class="turn-separator" />
+          </template>
         </div>
       </div>
     </div>
@@ -346,16 +356,13 @@ const highlight = (el: HTMLElement, binding: { content: string; lang?: string })
 .close-button:hover { color: #888; }
 .empty-list-message { color: #888; text-align: center; padding: 1rem; }
 .chat-panel { flex-grow: 1; overflow-y: auto; display: flex; justify-content: center; }
-.chat-container { width: 100%; max-width: 960px; padding: 2rem 1rem; box-sizing: border-box; }
-.message + .message { margin-top: 1.5rem; }
-.message.role-user + .message.role-assistant { margin-top: 2.5rem; }
-.message.role-assistant + .message.role-user { margin-top: 2.5rem; }
+.chat-container { width: 100%; max-width: 880px; padding: 2rem 1rem; box-sizing: border-box; }
 .message { display: flex; flex-direction: column; }
 .message.role-user { align-items: flex-end; }
 .message.role-assistant { align-items: flex-start; }
-.bubble { padding: 0.8rem 1.2rem; border-radius: 1.2rem; max-width: 85%; display: inline-block;}
+.bubble { padding: 0.2rem 1.2rem; padding-bottom: 1.0rem; border-radius: 1.2rem; max-width: 100%; display: inline-block;}
 .message.role-user .bubble { background-color: #f0f0f0; }
-.message.role-assistant .bubble { background-color: transparent; border: 1px solid #e0e0e0;}
+.message.role-assistant .bubble { background-color: transparent; }
 .content { white-space: pre-wrap; word-wrap: break-word; line-height: 1.6; }
 .error-message, .loading-message { text-align: center; padding: 2rem; color: #888; }
 .ghost-panel { width: 320px; flex-shrink: 0; }
@@ -368,23 +375,51 @@ pre code { display: block; overflow-x: auto; padding: 1em; background: #2d2d2d; 
 .content pre:first-child { margin-top: 0; }
 .content pre:last-child { margin-bottom: 0; }
 
+.assistant-extra {
+  width: 100%;
+  margin-top: 0.5rem;
+}
+
+.expected-result, .criteria-result {
+  border-radius: 8px;
+  padding: 0.8rem 1.2rem;
+  font-size: 0.9em;
+  margin-top: 0.75rem;
+}
+
 .expected-result {
   border: 1px solid #a2d2ff;
   background-color: #f0f8ff;
-  border-radius: 8px;
-  padding: 0.8rem 1.2rem;
-  margin-top: 0.5rem;
-  max-width: 85%;
-  font-size: 0.9em;
 }
-.expected-title {
+
+.criteria-result {
+  border: 1px solid #ffb3b3;
+  background-color: #fff0f0;
+}
+
+.expected-title, .criteria-title {
   font-weight: bold;
-  color: #0077cc;
   margin-bottom: 0.5rem;
 }
-.expected-content {
+
+.expected-title {
+  color: #0077cc;
+}
+
+.criteria-title {
+  color: #d92d20;
+}
+
+.expected-content, .criteria-content {
   color: #333;
   white-space: pre-wrap;
   word-wrap: break-word;
 }
+
+.turn-separator {
+    border: none;
+    border-top: 1px solid #dddddd;
+    margin: 2rem 0;
+}
+
 </style>

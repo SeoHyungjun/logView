@@ -20,3 +20,6 @@ yarn-error.log*
 *.swp
 chat.png
 2.png
+
+# logs
+backend/log
