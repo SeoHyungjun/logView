@@ -95,7 +95,7 @@ def build_file_tree(directory: str):
                         if line.strip():
                             sessions.append({
                                 "id": f"{rel_path}:{i}",
-                                "name": f"Conversation {i}",
+                                "name": f"Conv {i + 1}",
                                 "type": "session",
                                 "path": rel_path,
                                 "sessionIndex": i
@@ -136,7 +136,57 @@ def get_log_content(file_path: str, session: int = Query(0, description="파일 
         if session >= len(lines):
             raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
 
-        session_data = json.loads(lines[session])
+        try:
+            session_data = json.loads(lines[session])
+        except json.JSONDecodeError as e:
+            print(f"--- !!! [Session {session}] JSONDecodeError !!! ---")
+            print(f"Error: {e}")
+            print("--- Failing line content: ---")
+            print(lines[session])
+            raise HTTPException(status_code=500, detail=f"로그 파일의 JSON 형식이 잘못되었습니다: line {session}")
+
+        # print(session_data)
+        
+        # 프론트엔드는 'accumulated_conversations'를 사용하므로, 이 키를 기준으로 데이터를 구성합니다.
+        
+        # 1. 'accumulated_conversations'가 없는 경우, 다른 키에서 생성 시도
+        if 'accumulated_conversations' not in session_data:
+            print(f"--- [Session {session}] 'accumulated_conversations' not found. Attempting to construct it. ---")
+            conversation_to_process = None
+            # 1a. 'conversation'과 'response'를 조합
+            if 'conversation' in session_data and 'response' in session_data:
+                print(f"--- [Session {session}] Constructing from 'conversation' and 'response'. ---")
+                new_conversation = []
+                user_turns = session_data['conversation']
+                assistant_turns = session_data['response']
+                is_user_turn_object = len(user_turns) > 0 and isinstance(user_turns[0], dict)
+                max_len = max(len(user_turns), len(assistant_turns))
+                for i in range(max_len):
+                    if i < len(user_turns):
+                        if is_user_turn_object:
+                            new_conversation.append(user_turns[i])
+                        else:
+                            new_conversation.append({'role': 'user', 'content': user_turns[i]})
+                    if i < len(assistant_turns):
+                        new_conversation.append({'role': 'assistant', 'content': assistant_turns[i]})
+                conversation_to_process = new_conversation
+            # 1b. 'conversation'만 있는 경우
+            elif 'conversation' in session_data:
+                print(f"--- [Session {session}] Constructing from 'conversation' only. ---")
+                conversation_to_process = session_data['conversation']
+            
+            if conversation_to_process:
+                session_data['accumulated_conversations'] = conversation_to_process
+                print(f"--- [Session {session}] Constructed 'accumulated_conversations'. ---")
+                # print(session_data['accumulated_conversations'])
+
+        # 2. 'accumulated_conversations'가 있으면, 내부 content의 개행문자 처리 -> 현재 비활성화
+        # if 'accumulated_conversations' in session_data:
+        #     for message in session_data['accumulated_conversations']:
+        #         if 'content' in message and isinstance(message['content'], str):
+        #             message['content'] = message['content'].replace('\n', '\n')
+
+        # print(session_data)
         return session_data
 
     except json.JSONDecodeError:
