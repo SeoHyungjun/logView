@@ -1,6 +1,0 @@
-{"role": "user", "content": "안녕, 넌 누구야?"}
-{"role": "assistant", "content": "나는 Gemini야. 구글에서 만든 대규모 언어 모델이지."}
-{"role": "user", "content": "무엇을 할 수 있니?"}
-{"role": "assistant", "content": "다양한 질문에 답하고, 여러가지 작업을 도와줄 수 있어."}
-{"role": "user", "content": "예를 들면?"}
-{"role": "assistant", "content": "코드 작성, 번역, 글쓰기, 그리고 지금처럼 너와 대화하는 것도 가능해."}
