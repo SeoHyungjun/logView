@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, nextTick, Directive } from 'vue';
+import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue';
+import MarkdownIt from 'markdown-it';
 import hljs from 'highlight.js';
-import 'highlight.js/styles/github-dark.css';
+import 'highlight.js/styles/github.css';
 
 // --- 타입 정의 ---
 interface TreeItem {
@@ -13,12 +14,6 @@ interface TreeItem {
   isExpanded: boolean;
   children: TreeItem[];
   sessionIndex?: number;
-}
-
-interface LogPart {
-  type: 'text' | 'code';
-  content: string;
-  lang?: string;
 }
 
 interface SessionData {
@@ -38,10 +33,34 @@ const fileInput = ref<HTMLInputElement | null>(null);
 const folderInput = ref<HTMLInputElement | null>(null);
 const activeSessionId = ref<string | null>(null);
 const isLoading = ref(false);
+const isPanelCollapsed = ref(false);
 
 const API_BASE_URL = 'http://localhost:8000';
 
 const logs = computed(() => activeSessionData.value?.accumulated_conversations || []);
+
+// --- 마크다운 설정 (markdown-it) ---
+const md = new MarkdownIt({
+  html: true,
+  breaks: true,
+  highlight: function (str, lang) {
+    if (lang && hljs.getLanguage(lang)) {
+      try {
+        return (
+          '<pre class="hljs"><code>' +
+          hljs.highlight(str, { language: lang, ignoreIllegals: true }).value +
+          '</code></pre>'
+        );
+      } catch (__) {}
+    }
+    return '<pre class="hljs"><code>' + md.utils.escapeHtml(str) + '</code></pre>';
+  },
+});
+
+const renderMarkdown = (content: string) => {
+  if (typeof content !== 'string') return '';
+  return md.render(content);
+};
 
 // --- API 통신 ---
 const fetchTree = async () => {
@@ -169,6 +188,39 @@ const handleFileSelect = (event: Event) => {
   }
 };
 
+const handleKeyDown = (event: KeyboardEvent) => {
+  if (!activeSessionId.value) return;
+  if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+
+  event.preventDefault();
+
+  const currentIndex = flattenedTree.value.findIndex(item => item.id === activeSessionId.value);
+  if (currentIndex === -1) return;
+
+  let nextIndex = -1;
+
+  if (event.key === 'ArrowDown') {
+    for (let i = currentIndex + 1; i < flattenedTree.value.length; i++) {
+      if (flattenedTree.value[i].type === 'session') {
+        nextIndex = i;
+        break;
+      }
+    }
+  } else { // ArrowUp
+    for (let i = currentIndex - 1; i >= 0; i--) {
+      if (flattenedTree.value[i].type === 'session') {
+        nextIndex = i;
+        break;
+      }
+    }
+  }
+
+  if (nextIndex !== -1) {
+    const nextSession = flattenedTree.value[nextIndex];
+    fetchLogContent(nextSession);
+  }
+};
+
 const traverseFileTree = async (item: any): Promise<File[]> => {
   const files: File[] = [];
   const queue: any[] = [item];
@@ -216,43 +268,23 @@ const onFileItemClick = (item: TreeItem) => {
 };
 
 // --- 생명주기 훅 ---
-onMounted(() => { fetchTree(); });
-
-// --- 코드 하이라이팅 ---
-const processLogContent = computed(() => {
-  return (content: string): LogPart[] => {
-    if (typeof content !== 'string') return [];
-    const parts: LogPart[] = [];
-    const codeBlockRegex = /```(\w+)?\n([\s\S]*?)\n```/g;
-    let lastIndex = 0;
-    let match;
-    while ((match = codeBlockRegex.exec(content)) !== null) {
-      const [fullMatch, lang, code] = match;
-      if (match.index > lastIndex) parts.push({ type: 'text', content: content.substring(lastIndex, match.index) });
-      parts.push({ type: 'code', content: code, lang: lang || 'plaintext' });
-      lastIndex = match.index + fullMatch.length;
-    }
-    if (lastIndex < content.length) parts.push({ type: 'text', content: content.substring(lastIndex) });
-    return parts;
-  };
+onMounted(() => {
+  fetchTree();
+  window.addEventListener('keydown', handleKeyDown);
 });
 
-const vHighlight: Directive<HTMLElement, { content: string; lang?: string }> = {
-  mounted: (el, binding) => highlight(el, binding.value),
-  updated: (el, binding) => highlight(el, binding.value),
-};
-
-const highlight = (el: HTMLElement, binding: { content: string; lang?: string }) => {
-  el.innerHTML = binding.content;
-  if (binding.lang) el.className = `language-${binding.lang}`;
-  nextTick(() => { hljs.highlightElement(el); });
-};
+onUnmounted(() => {
+  window.removeEventListener('keydown', handleKeyDown);
+});
 
 </script>
 
 <template>
-  <div v-if="treeData.length === 0 && !isLoading" class="init-page-container" @dragover.prevent="isDraggingOver = true" @dragleave.prevent="isDraggingOver = false" @drop="handleDrop">
-    <div class="init-content-wrapper">
+  <input type="file" ref="fileInput" @change="handleFileSelect" style="display: none;" multiple accept=".jsonl" />
+  <input type="file" ref="folderInput" @change="handleFileSelect" style="display: none;" webkitdirectory />
+
+  <div v-if="treeData.length === 0 && !isLoading" class="init-page-container">
+    <div class="init-content-wrapper" @dragover.prevent="isDraggingOver = true" @dragleave.prevent="isDraggingOver = false" @drop="handleDrop">
       <h1 class="init-title">Log Viewer</h1>
       <p class="init-description">JSONL 형식의 로그 파일을 위한 간단한 뷰어입니다.</p>
       <div :class="['drop-zone', { 'is-dragging-over': isDraggingOver }]">
@@ -266,12 +298,10 @@ const highlight = (el: HTMLElement, binding: { content: string; lang?: string })
           </div>
         </div>
       </div>
-      <input type="file" ref="fileInput" @change="handleFileSelect" style="display: none;" multiple accept=".jsonl" />
-      <input type="file" ref="folderInput" @change="handleFileSelect" style="display: none;" webkitdirectory />
     </div>
   </div>
 
-  <div v-else class="app-layout">
+  <div v-else class="app-layout" :class="{ 'panel-collapsed': isPanelCollapsed }">
     <div class="file-panel" :class="{ 'is-dragging-over': isDraggingOverPanel }" @dragover.prevent="isDraggingOverPanel = true" @dragleave.prevent="isDraggingOverPanel = false" @drop="handleDrop">
       <ul class="file-list">
         <li v-if="flattenedTree.length === 0 && !isLoading" class="empty-list-message">업로드된 파일이 없습니다.</li>
@@ -286,115 +316,296 @@ const highlight = (el: HTMLElement, binding: { content: string; lang?: string })
           <span v-if="item.type !== 'session'" class="close-button" @click.stop="deleteItem(item)">×</span>
         </li>
       </ul>
-    </div>
-
-    <div class="chat-panel">
-      <div class="chat-container">
-        <div v-if="isLoading" class="message"><p class="loading-message">로딩 중...</p></div>
-        <div v-else-if="error" class="message"><p class="error-message">{{ error }}</p></div>
-        <div v-else-if="logs.length === 0 && flattenedTree.length > 0" class="message"><p class="loading-message">왼쪽 목록에서 대화 세션을 선택하세요.</p></div>
-        <div v-else-if="logs.length === 0 && flattenedTree.length === 0" class="message"><p class="loading-message">표시할 로그가 없습니다. 파일을 업로드하세요.</p></div>
-        <div v-else>
-          <template v-for="(log, index) in logs" :key="index">
-            <div :class="['message', `role-${log.role}`]">
-              <div class="bubble">
-                <div class="content">
-                  <template v-for="(part, pIndex) in processLogContent(log.content)" :key="pIndex">
-                    <pre v-if="part.type === 'code'"><code v-highlight="{ content: part.content, lang: part.lang }"></code></pre>
-                    <p v-else v-html="part.content.replace(/\n/g, '<br>')"></p>
-                  </template>
-                </div>
-              </div>
-              <div v-if="log.role === 'assistant'" class="assistant-extra">
-                <div class="expected-result">
-                  <div class="expected-title">Expected Result</div>
-                  <div class="expected-content">{{ getAssistantTurnData(index, 'expected_results') }}</div>
-                </div>
-                <div v-if="getAssistantTurnData(index, 'criteria')" class="criteria-result">
-                   <div class="criteria-title">Criteria</div>
-                   <div class="criteria-content">{{ getAssistantTurnData(index, 'criteria') }}</div>
-                </div>
-              </div>
-            </div>
-            <hr v-if="log.role === 'assistant' && index < logs.length - 1" class="turn-separator" />
-          </template>
+      <div class="panel-footer">
+        <div class="button-group">
+          <button @click="fileInput?.click()" class="select-button">파일 추가</button>
+          <button @click="folderInput?.click()" class="select-button">폴더 추가</button>
         </div>
       </div>
     </div>
 
-    <div class="ghost-panel"></div>
+    <div class="panel-toggle-button" @click="isPanelCollapsed = !isPanelCollapsed">
+      {{ isPanelCollapsed ? '▶' : '◀' }}
+    </div>
+
+    <div class="chat-panel">
+      <div class="chat-container">
+        <div v-if="isLoading" class="message-block"><p class="loading-message">로딩 중...</p></div>
+        <div v-else-if="error" class="message-block"><p class="error-message">{{ error }}</p></div>
+        <div v-else-if="logs.length === 0 && flattenedTree.length > 0" class="message-block"><p class="loading-message">왼쪽 목록에서 대화 세션을 선택하세요.</p></div>
+        <div v-else-if="logs.length === 0 && flattenedTree.length === 0" class="message-block"><p class="loading-message">표시할 로그가 없습니다. 파일을 업로드하세요.</p></div>
+        
+        <template v-else v-for="(log, index) in logs" :key="index">
+          <div v-if="log.role === 'user'" class="turn-card">
+            <!-- Conversation Column -->
+            <div class="conversation-pair">
+              <!-- User Message -->
+              <div :class="['message', `role-${log.role}`]">
+                <div class="bubble">
+                  <div class="content" v-html="renderMarkdown(log.content)"></div>
+                </div>
+              </div>
+
+              <!-- Assistant Message -->
+              <template v-if="index + 1 < logs.length && logs[index + 1].role === 'assistant'">
+                <div :class="['message', `role-${logs[index + 1].role}`]">
+                  <div class="bubble">
+                    <div class="content" v-html="renderMarkdown(logs[index + 1].content)"></div>
+                  </div>
+                </div>
+              </template>
+            </div>
+
+            <!-- Extra Info Column -->
+            <div class="turn-extra">
+              <template v-if="index + 1 < logs.length && logs[index + 1].role === 'assistant'">
+                <div class="assistant-extra">
+                  <div class="expected-result">
+                    <div class="expected-title">Expected Result</div>
+                    <div class="expected-content">{{ getAssistantTurnData(index + 1, 'expected_results') }}</div>
+                  </div>
+                  <div v-if="getAssistantTurnData(index + 1, 'criteria')" class="criteria-result">
+                    <div class="criteria-title">Criteria</div>
+                    <div class="criteria-content">{{ getAssistantTurnData(index + 1, 'criteria') }}</div>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
   </div>
 </template>
 
 <style>
-/* 스타일은 이전과 동일합니다 */
-.init-page-container { display: flex; align-items: center; justify-content: center; height: 100vh; padding: 2rem; box-sizing: border-box; text-align: center; }
+:root {
+  --border-color: #e0e0e0;
+  --background-color: #f9fafb;
+  --card-background-color: #ffffff;
+  --card-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+  --panel-width: 320px;
+}
+
+body {
+  background-color: var(--background-color);
+}
+
+/* Init Page Styles */
+.init-page-container { display: flex; align-items: center; justify-content: center; height: 100vh; padding: 2rem; box-sizing: border-box; text-align: center; background-color: var(--background-color); }
 .init-content-wrapper { max-width: 720px; width: 100%; }
 .init-title { font-size: 3.2rem; font-weight: 700; color: #2c3e50; margin-bottom: 1rem; }
 .init-description { font-size: 1.1rem; color: #5a6a7a; margin-bottom: 2.5rem; }
-.drop-zone { width: 100%; border: 2px dashed #ccc; border-radius: 16px; padding: 2rem 3rem; transition: background-color 0.3s, border-color 0.3s; box-sizing: border-box; }
+.drop-zone { width: 100%; border: 2px dashed #ccc; border-radius: 16px; padding: 2rem 3rem; transition: background-color 0.3s, border-color 0.3s; box-sizing: border-box; background-color: var(--card-background-color); }
 .drop-zone.is-dragging-over { background-color: #e8f0fe; border-color: #4285f4; }
 .drop-zone-content { text-align: center; color: #555; }
 .drop-zone-content svg { color: #aaa; margin-bottom: 0.75rem; }
 .drop-zone-content p { font-size: 1.1rem; margin: 0.5rem 0; }
 .or-text { color: #999; margin: 1.25rem 0 !important; }
-.button-group { display: inline-flex; border: 1px solid #007aff; border-radius: 8px; overflow: hidden; }
-.select-button { background-color: white; color: #007aff; border: none; padding: 0.7rem 1.5rem; font-size: 1rem; font-weight: 500; cursor: pointer; transition: background-color 0.2s; }
+.button-group { display: flex; border: 1px solid #007aff; border-radius: 8px; overflow: hidden; }
+.select-button { background-color: white; color: #007aff; border: none; padding: 0.7rem 1.5rem; font-size: 1rem; font-weight: 500; cursor: pointer; transition: background-color 0.2s; flex-grow: 1; }
 .select-button:hover { background-color: #f0f8ff; }
 .select-button:first-child { border-right: 1px solid #007aff; }
-.app-layout { display: flex; justify-content: space-between; height: 100vh; width: 100%; }
-.file-panel { width: 320px; flex-shrink: 0; background-color: #f7f7f7; border-right: 1px solid #e0e0e0; display: flex; flex-direction: column; transition: background-color 0.3s; }
+
+/* Main App Layout */
+.app-layout { 
+  display: flex;
+  position: relative;
+  height: 100vh;
+  width: 100%;
+  background-color: var(--background-color);
+}
+
+/* File Panel */
+.file-panel { 
+  width: var(--panel-width);
+  flex-shrink: 0;
+  background-color: var(--card-background-color);
+  border-right: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  transition: width 0.3s ease, padding 0.3s ease;
+  overflow: hidden;
+}
+.app-layout.panel-collapsed .file-panel {
+  width: 0;
+  padding-left: 0;
+  padding-right: 0;
+  border-right: none;
+}
+
 .file-panel.is-dragging-over { background-color: #e8f0fe; }
-.file-list { list-style: none; padding: 0; margin: 0; overflow-y: auto; flex-grow: 1; user-select: none; }
-.file-item { display: flex; align-items: center; cursor: pointer; padding-top: 0.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid #e8e8e8; font-size: 0.9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; position: relative; }
+.file-list { list-style: none; padding: 0; margin: 0; flex-grow: 1; user-select: none; white-space: nowrap; overflow-y: auto; }
+.file-item { display: flex; align-items: center; cursor: pointer; padding: 0.5rem 1rem; border-bottom: 1px solid #f0f0f0; font-size: 0.9rem; overflow: hidden; text-overflow: ellipsis; position: relative; }
 .file-item:hover { background-color: #eef5ff; }
-.file-item.active { background-color: #d4e8ff; }
+.file-item.active { background-color: #d4e8ff; font-weight: 500; }
 .item-icon { margin-right: 8px; font-size: 0.8em; width: 12px; text-align: center; }
 .item-name { flex-grow: 1; }
 .close-button { color: #ccc; font-weight: bold; cursor: pointer; padding: 0 8px; font-size: 1.2rem; line-height: 1; position: absolute; right: 5px; display: none; }
 .file-item:hover .close-button { display: block; }
 .close-button:hover { color: #888; }
 .empty-list-message { color: #888; text-align: center; padding: 1rem; }
-.chat-panel { flex-grow: 1; overflow-y: auto; display: flex; justify-content: center; }
-.chat-container { width: 100%; max-width: 880px; padding: 2rem 1rem; box-sizing: border-box; }
-.message { display: flex; flex-direction: column; }
+
+.panel-footer {
+  padding: 1rem;
+  border-top: 1px solid var(--border-color);
+  display: flex;
+  justify-content: center;
+}
+
+.panel-footer .button-group {
+  width: 100%;
+}
+
+/* Chat Panel */
+.chat-panel { 
+  flex-grow: 1;
+  overflow-y: auto;
+  padding: 2rem;
+  position: relative;
+}
+
+.panel-toggle-button {
+  position: absolute;
+  left: var(--panel-width);
+  top: 50%;
+  transform: translateY(-50%) translateX(-50%);
+  background-color: white;
+  border: 1px solid var(--border-color);
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border-radius: 50%;
+  font-size: 16px;
+  color: #333;
+  box-shadow: 0 0 10px rgba(0,0,0,0.1);
+  transition: left 0.3s ease, background-color 0.2s ease;
+  z-index: 10;
+}
+.app-layout.panel-collapsed .panel-toggle-button {
+  left: 0;
+}
+.panel-toggle-button:hover { 
+  background-color: #f0f0f0; 
+}
+
+.chat-container {
+  width: 100%;
+  max-width: 1600px;
+  margin: 0 auto;
+}
+
+.message-block {
+  text-align: center;
+  padding: 2rem;
+  color: #888;
+}
+
+/* Turn Layout */
+.turn-card {
+  display: flex;
+  gap: 2rem;
+  background-color: var(--card-background-color);
+  padding: 2rem;
+  border-radius: 12px;
+  box-shadow: var(--card-shadow);
+  margin-bottom: 2rem;
+}
+
+.conversation-pair {
+  flex: 3;
+  min-width: 0;
+}
+
+.turn-extra {
+  flex: 2;
+  min-width: 0;
+  border-left: 1px solid var(--border-color);
+  padding-left: 2rem;
+}
+
+/* Message Bubbles & Content */
+.message { display: flex; flex-direction: column; margin-bottom: 1rem; }
+.message:last-child { margin-bottom: 0; }
 .message.role-user { align-items: flex-end; }
 .message.role-assistant { align-items: flex-start; }
-.bubble { padding: 0.2rem 1.2rem; padding-bottom: 1.0rem; border-radius: 1.2rem; max-width: 100%; display: inline-block;}
+.bubble { padding: 0.8rem 1.2rem; border-radius: 1.2rem; display: inline-block;}
 .message.role-user .bubble { background-color: #f0f0f0; }
 .message.role-assistant .bubble { background-color: transparent; }
-.content { white-space: pre-wrap; word-wrap: break-word; line-height: 1.6; }
-.error-message, .loading-message { text-align: center; padding: 2rem; color: #888; }
-.ghost-panel { width: 320px; flex-shrink: 0; }
-pre code { display: block; overflow-x: auto; padding: 1em; background: #2d2d2d; color: #ccc; border-radius: 8px; }
-.message.role-assistant .bubble pre code { background-color: #2d2d2d; }
-.message.role-user .bubble pre code { background-color: #3a3a3a; }
-.content p { margin-bottom: 1em; }
-.content p:last-child { margin-bottom: 0; }
-.content pre { margin-top: 1em; margin-bottom: 1em; }
-.content pre:first-child { margin-top: 0; }
-.content pre:last-child { margin-bottom: 0; }
 
+.content {
+  line-height: 1.6;
+  word-wrap: break-word;
+}
+
+/* Markdown Content Styling */
+.content p:last-child { margin-bottom: 0; }
+.content pre {
+  margin: 1em 0;
+  border-radius: 8px;
+  background-color: #f6f8fa;
+  padding: 1.5em;
+  overflow-x: auto;
+}
+.content pre code {
+  background: none;
+  padding: 0;
+}
+.content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1em 0;
+  overflow: hidden;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+}
+.content th, .content td {
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border-color);
+  text-align: left;
+}
+.content th {
+  background-color: #f7f7f7;
+  font-weight: 600;
+}
+.content tbody tr:nth-of-type(even) {
+  background-color: #fdfdfd;
+}
+.content blockquote {
+  margin: 1em 0;
+  padding: 0.5rem 1rem;
+  border-left: 4px solid var(--border-color);
+  background-color: #f7f7f7;
+  color: #555;
+}
+.content ul, .content ol {
+  padding-left: 1.5rem;
+}
+
+/* Assistant Extra Info */
 .assistant-extra {
   width: 100%;
-  margin-top: 0.5rem;
 }
 
 .expected-result, .criteria-result {
   border-radius: 8px;
   padding: 0.8rem 1.2rem;
   font-size: 0.9em;
-  margin-top: 0.75rem;
+  margin-bottom: 1rem;
+  border: 1px solid transparent;
 }
 
 .expected-result {
-  border: 1px solid #a2d2ff;
   background-color: #f0f8ff;
+  border-color: #a2d2ff;
 }
 
 .criteria-result {
-  border: 1px solid #ffb3b3;
   background-color: #fff0f0;
+  border-color: #ffb3b3;
 }
 
 .expected-title, .criteria-title {
@@ -402,24 +613,12 @@ pre code { display: block; overflow-x: auto; padding: 1em; background: #2d2d2d; 
   margin-bottom: 0.5rem;
 }
 
-.expected-title {
-  color: #0077cc;
-}
-
-.criteria-title {
-  color: #d92d20;
-}
-
+.expected-title { color: #0077cc; }
+.criteria-title { color: #d92d20; }
 .expected-content, .criteria-content {
   color: #333;
   white-space: pre-wrap;
   word-wrap: break-word;
-}
-
-.turn-separator {
-    border: none;
-    border-top: 1px solid #dddddd;
-    margin: 2rem 0;
 }
 
 </style>
