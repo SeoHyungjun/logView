@@ -39,7 +39,7 @@ cd logView
 2.  **백엔드 서버 실행**
 
     ```bash
-    uvicorn main:app --reload
+    uvicorn main:app --reload --host 0.0.0.0
     ```
 
     서버는 기본적으로 `http://127.0.0.1:8000`에서 실행됩니다.
@@ -56,7 +56,7 @@ cd logView
 2.  **프론트엔드 애플리케이션 실행**
 
     ```bash
-    npm run dev
+    npm run dev -- --host 0.0.0.0
     ```
 
     프론트엔드 애플리케이션은 기본적으로 `http://localhost:5173`에서 실행됩니다. 백엔드 서버가 실행 중이어야 정상적으로 로그 데이터를 가져올 수 있습니다.

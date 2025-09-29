@@ -35,15 +35,16 @@ const activeSessionId = ref<string | null>(null);
 const isLoading = ref(false);
 const isPanelCollapsed = ref(false);
 
-const API_BASE_URL = 'http://localhost:8000';
+// 환경 변수에서 API_BASE_URL을 가져오거나 기본값 사용
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
 const logs = computed(() => activeSessionData.value?.accumulated_conversations || []);
 
 // --- 마크다운 설정 (markdown-it) ---
-const md = new MarkdownIt({
+const md: MarkdownIt = new MarkdownIt({
   html: true,
   breaks: true,
-  highlight: function (str, lang) {
+  highlight: function (str: string, lang: string): string {
     if (lang && hljs.getLanguage(lang)) {
       try {
         return (
@@ -59,7 +60,11 @@ const md = new MarkdownIt({
 
 const renderMarkdown = (content: string) => {
   if (typeof content !== 'string') return '';
-  return md.render(content);
+  
+  // **로 감싸진 텍스트 앞뒤로 줄바꿈 추가
+  const fixedContent = content.replace(/\*\*(.*?)\*\*/g, ' **$1** ');
+  
+  return md.render(fixedContent);
 };
 
 // --- API 통신 ---
@@ -114,8 +119,7 @@ const uploadFiles = async (files: File[]) => {
     const response = await fetch(`${API_BASE_URL}/api/upload`, { method: 'POST', body: formData });
     if (!response.ok) throw new Error('파일 업로드에 실패했습니다.');
     await fetchTree();
-    const firstSession = findFirstSession(treeData.value);
-    if (firstSession) await fetchLogContent(firstSession);
+    // 파일 업로드 후에는 트리만 업데이트하고 세션 로드는 사용자가 직접 클릭하도록 함
   } catch (e: any) {
     error.value = e.message;
   } finally {
@@ -184,6 +188,7 @@ const handleFileSelect = (event: Event) => {
   const input = event.target as HTMLInputElement;
   if (input.files) {
     uploadFiles(Array.from(input.files));
+    // 파일 선택 후 input 초기화
     input.value = '';
   }
 };
@@ -493,9 +498,21 @@ body {
 }
 
 .chat-container {
-  width: 100%;
-  max-width: 1600px;
+  width: 90%;
   margin: 0 auto;
+}
+
+/* 반응형 디자인 */
+@media (max-width: 768px) {
+  .chat-container {
+    width: 95%;
+  }
+}
+
+@media (max-width: 480px) {
+  .chat-container {
+    width: 98%;
+  }
 }
 
 .message-block {
@@ -513,6 +530,41 @@ body {
   border-radius: 12px;
   box-shadow: var(--card-shadow);
   margin-bottom: 2rem;
+  width: 90%;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* 반응형 디자인 */
+@media (max-width: 768px) {
+  .turn-card {
+    width: 95%;
+    padding: 1rem;
+    gap: 1rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .turn-card {
+    width: 98%;
+    padding: 0.5rem;
+    gap: 0.5rem;
+    flex-direction: column;
+  }
+  
+  .conversation-pair {
+    flex: none;
+    width: 100%;
+  }
+  
+  .turn-extra {
+    flex: none;
+    width: 100%;
+    border-left: none;
+    border-top: 1px solid var(--border-color);
+    padding-left: 0;
+    padding-top: 1rem;
+  }
 }
 
 .conversation-pair {
@@ -533,7 +585,11 @@ body {
 .message.role-user { align-items: flex-end; }
 .message.role-assistant { align-items: flex-start; }
 .bubble { padding: 0.8rem 1.2rem; border-radius: 1.2rem; display: inline-block;}
-.message.role-user .bubble { background-color: #f0f0f0; }
+.message.role-user .bubble { 
+  background-color: #f0f0f0; 
+  margin-left: auto; 
+  max-width: 85%; 
+}
 .message.role-assistant .bubble { background-color: transparent; }
 
 .content {
@@ -548,6 +604,37 @@ body {
   border-radius: 8px;
   background-color: #f6f8fa;
   padding: 1.5em;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  max-width: 100%;
+}
+
+.message.role-assistant .content pre {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.message.role-assistant .bubble {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.message.role-assistant .content {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.content strong {
+  font-weight: bold !important;
+}
+
+.bubble {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.content {
+  max-width: 100%;
   overflow-x: auto;
 }
 .content pre code {

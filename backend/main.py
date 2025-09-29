@@ -11,9 +11,8 @@ app = FastAPI()
 UPLOAD_DIRECTORY = "log/uploads"
 
 # --- CORS 설정 ---
-origins = [
-    "http://localhost:5173",  # Vue.js 개발 서버
-]
+# 모든 origin 허용 (개발 환경용)
+origins = ["*"]
 
 app.add_middleware(
     CORSMiddleware,
