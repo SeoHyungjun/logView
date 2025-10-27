@@ -18,8 +18,6 @@ interface TreeItem {
 
 interface SessionData {
   accumulated_conversations: any[];
-  expected_results: string[];
-  criteria: string[];
   [key: string]: any;
 }
 
@@ -34,6 +32,12 @@ const folderInput = ref<HTMLInputElement | null>(null);
 const activeSessionId = ref<string | null>(null);
 const isLoading = ref(false);
 const isPanelCollapsed = ref(false);
+
+// 동적 키 상태
+const allKeys = ref<string[]>([]);
+const visibleKeys = ref<Record<string, boolean>>({});
+const topLevelKeys = ref<string[]>([]);
+const turnLevelKeys = ref<string[]>([]);
 
 // 환경 변수에서 API_BASE_URL을 가져오거나 기본값 사용
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
@@ -60,10 +64,7 @@ const md: MarkdownIt = new MarkdownIt({
 
 const renderMarkdown = (content: string) => {
   if (typeof content !== 'string') return '';
-  
-  // **로 감싸진 텍스트 앞뒤로 줄바꿈 추가
   const fixedContent = content.replace(/\*\*(.*?)\*\*/g, ' **$1** ');
-  
   return md.render(fixedContent);
 };
 
@@ -91,11 +92,14 @@ const fetchLogContent = async (item: TreeItem) => {
     activeSessionData.value = null;
     const response = await fetch(`${API_BASE_URL}/api/logs/${item.path}?session=${item.sessionIndex}`);
     if (!response.ok) throw new Error(`로그 파일을 불러오는 데 실패했습니다: ${item.name}`);
-    activeSessionData.value = await response.json();
+    const data = await response.json();
+    activeSessionData.value = data;
     activeSessionId.value = item.id;
+    processSessionKeys(data);
   } catch (e: any) {
     error.value = e.message;
     activeSessionData.value = null;
+    resetKeys();
   } finally {
     isLoading.value = false;
   }
@@ -119,7 +123,6 @@ const uploadFiles = async (files: File[]) => {
     const response = await fetch(`${API_BASE_URL}/api/upload`, { method: 'POST', body: formData });
     if (!response.ok) throw new Error('파일 업로드에 실패했습니다.');
     await fetchTree();
-    // 파일 업로드 후에는 트리만 업데이트하고 세션 로드는 사용자가 직접 클릭하도록 함
   } catch (e: any) {
     error.value = e.message;
   } finally {
@@ -139,6 +142,7 @@ const deleteItem = async (item: TreeItem) => {
     if (wasActive) {
       activeSessionData.value = null;
       activeSessionId.value = null;
+      resetKeys();
       const firstSession = findFirstSession(treeData.value);
       if (firstSession) await fetchLogContent(firstSession);
     }
@@ -150,6 +154,31 @@ const deleteItem = async (item: TreeItem) => {
 };
 
 // --- 유틸리티 함수 ---
+const processSessionKeys = (data: SessionData) => {
+  const ignoreList = ['accumulated_conversations', 'conversation', 'response'];
+  const keys = Object.keys(data).filter(k => !ignoreList.includes(k));
+  
+  topLevelKeys.value = keys.filter(k => !Array.isArray(data[k]));
+  turnLevelKeys.value = keys.filter(k => Array.isArray(data[k]));
+  allKeys.value = [...topLevelKeys.value, ...turnLevelKeys.value].sort();
+  
+  const newVisibleKeys: Record<string, boolean> = {};
+  allKeys.value.forEach(k => {
+    newVisibleKeys[k] = visibleKeys.value[k] ?? true;
+  });
+  visibleKeys.value = newVisibleKeys;
+};
+
+const resetKeys = () => {
+  allKeys.value = [];
+  topLevelKeys.value = [];
+  turnLevelKeys.value = [];
+  visibleKeys.value = {};
+};
+
+const visibleTopLevelKeys = computed(() => topLevelKeys.value.filter(k => visibleKeys.value[k]));
+const visibleTurnLevelKeys = computed(() => turnLevelKeys.value.filter(k => visibleKeys.value[k]));
+
 const enhanceTree = (nodes: any[], depth = 0): TreeItem[] => {
   return nodes.map(node => ({ ...node, depth, isExpanded: true, children: node.children ? enhanceTree(node.children, depth + 1) : [] }));
 };
@@ -177,18 +206,55 @@ const flattenedTree = computed(() => {
   return flat;
 });
 
-const getAssistantTurnData = (currentIndex: number, dataKey: 'expected_results' | 'criteria') => {
+const getTurnData = (currentIndex: number, dataKey: string) => {
   if (!activeSessionData.value || !activeSessionData.value[dataKey]) return null;
   const assistantMsgIndex = logs.value.slice(0, currentIndex).filter(l => l.role === 'assistant').length;
   return activeSessionData.value[dataKey][assistantMsgIndex];
 };
+
+const stringToColor = (str: string) => {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = str.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  let color = '#';
+  for (let i = 0; i < 3; i++) {
+    const value = (hash >> (i * 8)) & 0xFF;
+    color += ('00' + value.toString(16)).substr(-2);
+  }
+  return color;
+};
+
+const getBoxColor = (key: string) => {
+  if (key === 'criteria') {
+    return {
+      bg: '#fff0f0',
+      border: '#ffb3b3',
+      text: '#d92d20',
+    };
+  }
+  if (key === 'expected_results') {
+    return {
+      bg: '#f0f8ff',
+      border: '#a2d2ff',
+      text: '#0077cc',
+    };
+  }
+  const baseColor = stringToColor(key);
+  // 간단한 밝기 조절 로직 (여기서는 단순화를 위해 hex를 직접 사용)
+  // 실제 프로덕션에서는 라이브러리 사용을 권장 (e.g., tinycolor2)
+  const bg = baseColor + '20'; // 투명도 추가
+  const border = baseColor + '80';
+  const text = baseColor;
+  return { bg, border, text };
+};
+
 
 // --- 이벤트 핸들러 ---
 const handleFileSelect = (event: Event) => {
   const input = event.target as HTMLInputElement;
   if (input.files) {
     uploadFiles(Array.from(input.files));
-    // 파일 선택 후 input 초기화
     input.value = '';
   }
 };
@@ -196,14 +262,10 @@ const handleFileSelect = (event: Event) => {
 const handleKeyDown = (event: KeyboardEvent) => {
   if (!activeSessionId.value) return;
   if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
-
   event.preventDefault();
-
   const currentIndex = flattenedTree.value.findIndex(item => item.id === activeSessionId.value);
   if (currentIndex === -1) return;
-
   let nextIndex = -1;
-
   if (event.key === 'ArrowDown') {
     for (let i = currentIndex + 1; i < flattenedTree.value.length; i++) {
       if (flattenedTree.value[i].type === 'session') {
@@ -219,7 +281,6 @@ const handleKeyDown = (event: KeyboardEvent) => {
       }
     }
   }
-
   if (nextIndex !== -1) {
     const nextSession = flattenedTree.value[nextIndex];
     fetchLogContent(nextSession);
@@ -321,6 +382,17 @@ onUnmounted(() => {
           <span v-if="item.type !== 'session'" class="close-button" @click.stop="deleteItem(item)">×</span>
         </li>
       </ul>
+      
+      <div v-if="allKeys.length > 0" class="checkbox-panel">
+        <h4 class="checkbox-title">Display Options</h4>
+        <div class="checkbox-grid">
+          <div v-for="key in allKeys" :key="key" class="checkbox-item">
+            <input type="checkbox" :id="`check-${key}`" v-model="visibleKeys[key]" class="custom-checkbox">
+            <label :for="`check-${key}`">{{ key }}</label>
+          </div>
+        </div>
+      </div>
+
       <div class="panel-footer">
         <div class="button-group">
           <button @click="fileInput?.click()" class="select-button">파일 추가</button>
@@ -340,43 +412,38 @@ onUnmounted(() => {
         <div v-else-if="logs.length === 0 && flattenedTree.length > 0" class="message-block"><p class="loading-message">왼쪽 목록에서 대화 세션을 선택하세요.</p></div>
         <div v-else-if="logs.length === 0 && flattenedTree.length === 0" class="message-block"><p class="loading-message">표시할 로그가 없습니다. 파일을 업로드하세요.</p></div>
         
-        <template v-else v-for="(log, index) in logs" :key="index">
-          <div v-if="log.role === 'user'" class="turn-card">
-            <!-- Conversation Column -->
-            <div class="conversation-pair">
-              <!-- User Message -->
-              <div :class="['message', `role-${log.role}`]">
-                <div class="bubble">
-                  <div class="content" v-html="renderMarkdown(log.content)"></div>
-                </div>
-              </div>
-
-              <!-- Assistant Message -->
-              <template v-if="index + 1 < logs.length && logs[index + 1].role === 'assistant'">
-                <div :class="['message', `role-${logs[index + 1].role}`]">
-                  <div class="bubble">
-                    <div class="content" v-html="renderMarkdown(logs[index + 1].content)"></div>
-                  </div>
-                </div>
-              </template>
-            </div>
-
-            <!-- Extra Info Column -->
-            <div class="turn-extra">
-              <template v-if="index + 1 < logs.length && logs[index + 1].role === 'assistant'">
-                <div class="assistant-extra">
-                  <div class="expected-result">
-                    <div class="expected-title">Expected Result</div>
-                    <div class="expected-content">{{ getAssistantTurnData(index + 1, 'expected_results') }}</div>
-                  </div>
-                  <div v-if="getAssistantTurnData(index + 1, 'criteria')" class="criteria-result">
-                    <div class="criteria-title">Criteria</div>
-                    <div class="criteria-content">{{ getAssistantTurnData(index + 1, 'criteria') }}</div>
-                  </div>
-                </div>
-              </template>
+        <template v-else>
+          <div v-if="activeSessionData && visibleTopLevelKeys.length > 0" class="top-level-info">
+            <div v-for="key in visibleTopLevelKeys" :key="key" class="info-box" :style="{ backgroundColor: getBoxColor(key).bg, borderColor: getBoxColor(key).border }">
+              <div class="info-title" :style="{ color: getBoxColor(key).text }">{{ key }}</div>
+              <div class="info-content">{{ activeSessionData[key] }}</div>
             </div>
           </div>
+
+          <template v-for="(log, index) in logs" :key="index">
+            <div v-if="log.role === 'user'" class="turn-card">
+              <div class="conversation-pair">
+                <div :class="['message', `role-${log.role}`]">
+                  <div class="bubble"><div class="content" v-html="renderMarkdown(log.content)"></div></div>
+                </div>
+                <template v-if="index + 1 < logs.length && logs[index + 1].role === 'assistant'">
+                  <div :class="['message', `role-${logs[index + 1].role}`]">
+                    <div class="bubble"><div class="content" v-html="renderMarkdown(logs[index + 1].content)"></div></div>
+                  </div>
+                </template>
+              </div>
+              <div class="turn-extra">
+                <template v-if="index + 1 < logs.length && logs[index + 1].role === 'assistant'">
+                  <div class="assistant-extra">
+                    <div v-for="key in visibleTurnLevelKeys" :key="key" class="dynamic-box" :style="{ backgroundColor: getBoxColor(key).bg, borderColor: getBoxColor(key).border }">
+                      <div class="dynamic-title" :style="{ color: getBoxColor(key).text }">{{ key }}</div>
+                      <div class="dynamic-content">{{ getTurnData(index + 1, key) }}</div>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </template>
         </template>
       </div>
     </div>
@@ -390,11 +457,10 @@ onUnmounted(() => {
   --card-background-color: #ffffff;
   --card-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
   --panel-width: 320px;
+  --primary-accent-color: #007aff;
 }
 
-body {
-  background-color: var(--background-color);
-}
+body { background-color: var(--background-color); }
 
 /* Init Page Styles */
 .init-page-container { display: flex; align-items: center; justify-content: center; height: 100vh; padding: 2rem; box-sizing: border-box; text-align: center; background-color: var(--background-color); }
@@ -407,38 +473,17 @@ body {
 .drop-zone-content svg { color: #aaa; margin-bottom: 0.75rem; }
 .drop-zone-content p { font-size: 1.1rem; margin: 0.5rem 0; }
 .or-text { color: #999; margin: 1.25rem 0 !important; }
-.button-group { display: flex; border: 1px solid #007aff; border-radius: 8px; overflow: hidden; }
-.select-button { background-color: white; color: #007aff; border: none; padding: 0.7rem 1.5rem; font-size: 1rem; font-weight: 500; cursor: pointer; transition: background-color 0.2s; flex-grow: 1; }
+.button-group { display: flex; border: 1px solid var(--primary-accent-color); border-radius: 8px; overflow: hidden; }
+.select-button { background-color: white; color: var(--primary-accent-color); border: none; padding: 0.7rem 1.5rem; font-size: 1rem; font-weight: 500; cursor: pointer; transition: background-color 0.2s; flex-grow: 1; }
 .select-button:hover { background-color: #f0f8ff; }
-.select-button:first-child { border-right: 1px solid #007aff; }
+.select-button:first-child { border-right: 1px solid var(--primary-accent-color); }
 
 /* Main App Layout */
-.app-layout { 
-  display: flex;
-  position: relative;
-  height: 100vh;
-  width: 100%;
-  background-color: var(--background-color);
-}
+.app-layout { display: flex; position: relative; height: 100vh; width: 100%; background-color: var(--background-color); }
 
 /* File Panel */
-.file-panel { 
-  width: var(--panel-width);
-  flex-shrink: 0;
-  background-color: var(--card-background-color);
-  border-right: 1px solid var(--border-color);
-  display: flex;
-  flex-direction: column;
-  transition: width 0.3s ease, padding 0.3s ease;
-  overflow: hidden;
-}
-.app-layout.panel-collapsed .file-panel {
-  width: 0;
-  padding-left: 0;
-  padding-right: 0;
-  border-right: none;
-}
-
+.file-panel { width: var(--panel-width); flex-shrink: 0; background-color: var(--card-background-color); border-right: 1px solid var(--border-color); display: flex; flex-direction: column; transition: width 0.3s ease, padding 0.3s ease; overflow: hidden; }
+.app-layout.panel-collapsed .file-panel { width: 0; padding-left: 0; padding-right: 0; border-right: none; }
 .file-panel.is-dragging-over { background-color: #e8f0fe; }
 .file-list { list-style: none; padding: 0; margin: 0; flex-grow: 1; user-select: none; white-space: nowrap; overflow-y: auto; }
 .file-item { display: flex; align-items: center; cursor: pointer; padding: 0.5rem 1rem; border-bottom: 1px solid #f0f0f0; font-size: 0.9rem; overflow: hidden; text-overflow: ellipsis; position: relative; }
@@ -451,261 +496,67 @@ body {
 .close-button:hover { color: #888; }
 .empty-list-message { color: #888; text-align: center; padding: 1rem; }
 
-.panel-footer {
-  padding: 1rem;
-  border-top: 1px solid var(--border-color);
-  display: flex;
-  justify-content: center;
-}
+/* Checkbox Panel */
+.checkbox-panel { padding: 1rem; border-top: 1px solid var(--border-color); }
+.checkbox-title { margin-top: 0; margin-bottom: 1rem; font-size: 1rem; font-weight: 600; color: #333; }
+.checkbox-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem; }
+.checkbox-item { display: flex; align-items: center; }
+.checkbox-item label { margin-left: 0.5rem; font-size: 0.9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+.custom-checkbox { appearance: none; background-color: #fff; margin: 0; font: inherit; color: currentColor; width: 1.15em; height: 1.15em; border: 0.15em solid currentColor; border-radius: 0.15em; transform: translateY(-0.075em); display: grid; place-content: center; cursor: pointer; }
+.custom-checkbox::before { content: ""; width: 0.65em; height: 0.65em; transform: scale(0); transition: 120ms transform ease-in-out; box-shadow: inset 1em 1em var(--primary-accent-color); transform-origin: bottom left; clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%); }
+.custom-checkbox:checked::before { transform: scale(1); }
 
-.panel-footer .button-group {
-  width: 100%;
-}
+.panel-footer { padding: 1rem; border-top: 1px solid var(--border-color); display: flex; justify-content: center; }
+.panel-footer .button-group { width: 100%; }
 
 /* Chat Panel */
-.chat-panel { 
-  flex-grow: 1;
-  overflow-y: auto;
-  padding: 2rem;
-  position: relative;
-}
+.chat-panel { flex-grow: 1; overflow-y: auto; padding: 2rem; position: relative; }
+.panel-toggle-button { position: absolute; left: var(--panel-width); top: 50%; transform: translateY(-50%) translateX(-50%); background-color: white; border: 1px solid var(--border-color); width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; cursor: pointer; border-radius: 50%; font-size: 16px; color: #333; box-shadow: 0 0 10px rgba(0,0,0,0.1); transition: left 0.3s ease, background-color 0.2s ease; z-index: 10; }
+.app-layout.panel-collapsed .panel-toggle-button { left: 0; }
+.panel-toggle-button:hover { background-color: #f0f0f0; }
+.chat-container { width: 90%; margin: 0 auto; }
 
-.panel-toggle-button {
-  position: absolute;
-  left: var(--panel-width);
-  top: 50%;
-  transform: translateY(-50%) translateX(-50%);
-  background-color: white;
-  border: 1px solid var(--border-color);
-  width: 28px;
-  height: 28px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  border-radius: 50%;
-  font-size: 16px;
-  color: #333;
-  box-shadow: 0 0 10px rgba(0,0,0,0.1);
-  transition: left 0.3s ease, background-color 0.2s ease;
-  z-index: 10;
-}
-.app-layout.panel-collapsed .panel-toggle-button {
-  left: 0;
-}
-.panel-toggle-button:hover { 
-  background-color: #f0f0f0; 
-}
+@media (max-width: 768px) { .chat-container { width: 95%; } }
+@media (max-width: 480px) { .chat-container { width: 98%; } }
 
-.chat-container {
-  width: 90%;
-  margin: 0 auto;
-}
+.message-block { text-align: center; padding: 2rem; color: #888; }
 
-/* 반응형 디자인 */
-@media (max-width: 768px) {
-  .chat-container {
-    width: 95%;
-  }
-}
-
-@media (max-width: 480px) {
-  .chat-container {
-    width: 98%;
-  }
-}
-
-.message-block {
-  text-align: center;
-  padding: 2rem;
-  color: #888;
-}
+/* Top Level Info */
+.top-level-info { display: flex; flex-direction: column; gap: 1rem; padding: 1rem; background-color: var(--card-background-color); border-radius: 12px; box-shadow: var(--card-shadow); width: 90%; margin: 0 auto 2rem; }
+.info-box { flex: 1 1 auto; min-width: 150px; border-radius: 8px; padding: 0.8rem 1.2rem; font-size: 0.9em; border: 1px solid; }
+.info-title { font-weight: bold; margin-bottom: 0.5rem; text-transform: capitalize; }
+.info-content { color: #333; white-space: pre-wrap; word-wrap: break-word; }
 
 /* Turn Layout */
-.turn-card {
-  display: flex;
-  gap: 2rem;
-  background-color: var(--card-background-color);
-  padding: 2rem;
-  border-radius: 12px;
-  box-shadow: var(--card-shadow);
-  margin-bottom: 2rem;
-  width: 90%;
-  margin-left: auto;
-  margin-right: auto;
-}
-
-/* 반응형 디자인 */
-@media (max-width: 768px) {
-  .turn-card {
-    width: 95%;
-    padding: 1rem;
-    gap: 1rem;
-  }
-}
-
-@media (max-width: 480px) {
-  .turn-card {
-    width: 98%;
-    padding: 0.5rem;
-    gap: 0.5rem;
-    flex-direction: column;
-  }
-  
-  .conversation-pair {
-    flex: none;
-    width: 100%;
-  }
-  
-  .turn-extra {
-    flex: none;
-    width: 100%;
-    border-left: none;
-    border-top: 1px solid var(--border-color);
-    padding-left: 0;
-    padding-top: 1rem;
-  }
-}
-
-.conversation-pair {
-  flex: 3;
-  min-width: 0;
-}
-
-.turn-extra {
-  flex: 2;
-  min-width: 0;
-  border-left: 1px solid var(--border-color);
-  padding-left: 2rem;
-}
+.turn-card { display: flex; gap: 2rem; background-color: var(--card-background-color); padding: 2rem; border-radius: 12px; box-shadow: var(--card-shadow); margin-bottom: 2rem; width: 90%; margin-left: auto; margin-right: auto; }
+@media (max-width: 768px) { .turn-card { width: 95%; padding: 1rem; gap: 1rem; } }
+@media (max-width: 480px) { .turn-card { width: 98%; padding: 0.5rem; gap: 0.5rem; flex-direction: column; } .conversation-pair, .turn-extra { flex: none; width: 100%; } .turn-extra { border-left: none; border-top: 1px solid var(--border-color); padding-left: 0; padding-top: 1rem; } }
+.conversation-pair { flex: 3; min-width: 0; }
+.turn-extra { flex: 2; min-width: 0; border-left: 1px solid var(--border-color); padding-left: 2rem; }
 
 /* Message Bubbles & Content */
 .message { display: flex; flex-direction: column; margin-bottom: 1rem; }
 .message:last-child { margin-bottom: 0; }
 .message.role-user { align-items: flex-end; }
 .message.role-assistant { align-items: flex-start; }
-.bubble { padding: 0.8rem 1.2rem; border-radius: 1.2rem; display: inline-block;}
-.message.role-user .bubble { 
-  background-color: #f0f0f0; 
-  margin-left: auto; 
-  max-width: 85%; 
-}
+.bubble { padding: 0.8rem 1.2rem; border-radius: 1.2rem; display: inline-block; max-width: 100%; overflow-x: auto; }
+.message.role-user .bubble { background-color: #f0f0f0; margin-left: auto; max-width: 85%; }
 .message.role-assistant .bubble { background-color: transparent; }
-
-.content {
-  line-height: 1.6;
-  word-wrap: break-word;
-}
-
-/* Markdown Content Styling */
+.content { line-height: 1.6; word-wrap: break-word; max-width: 100%; overflow-x: auto; }
 .content p:last-child { margin-bottom: 0; }
-.content pre {
-  margin: 1em 0;
-  border-radius: 8px;
-  background-color: #f6f8fa;
-  padding: 1.5em;
-  white-space: pre-wrap;
-  word-wrap: break-word;
-  max-width: 100%;
-}
-
-.message.role-assistant .content pre {
-  max-width: 100%;
-  overflow-x: auto;
-}
-
-.message.role-assistant .bubble {
-  max-width: 100%;
-  overflow-x: auto;
-}
-
-.message.role-assistant .content {
-  max-width: 100%;
-  overflow-x: auto;
-}
-
-.content strong {
-  font-weight: bold !important;
-}
-
-.bubble {
-  max-width: 100%;
-  overflow-x: auto;
-}
-
-.content {
-  max-width: 100%;
-  overflow-x: auto;
-}
-.content pre code {
-  background: none;
-  padding: 0;
-}
-.content table {
-  width: 100%;
-  border-collapse: collapse;
-  margin: 1em 0;
-  overflow: hidden;
-  border-radius: 8px;
-  border: 1px solid var(--border-color);
-}
-.content th, .content td {
-  padding: 0.75rem 1rem;
-  border: 1px solid var(--border-color);
-  text-align: left;
-}
-.content th {
-  background-color: #f7f7f7;
-  font-weight: 600;
-}
-.content tbody tr:nth-of-type(even) {
-  background-color: #fdfdfd;
-}
-.content blockquote {
-  margin: 1em 0;
-  padding: 0.5rem 1rem;
-  border-left: 4px solid var(--border-color);
-  background-color: #f7f7f7;
-  color: #555;
-}
-.content ul, .content ol {
-  padding-left: 1.5rem;
-}
+.content pre { margin: 1em 0; border-radius: 8px; background-color: #f6f8fa; padding: 1.5em; white-space: pre-wrap; word-wrap: break-word; max-width: 100%; }
+.content pre code { background: none; padding: 0; }
+.content table { width: 100%; border-collapse: collapse; margin: 1em 0; overflow: hidden; border-radius: 8px; border: 1px solid var(--border-color); }
+.content th, .content td { padding: 0.75rem 1rem; border: 1px solid var(--border-color); text-align: left; }
+.content th { background-color: #f7f7f7; font-weight: 600; }
+.content tbody tr:nth-of-type(even) { background-color: #fdfdfd; }
+.content blockquote { margin: 1em 0; padding: 0.5rem 1rem; border-left: 4px solid var(--border-color); background-color: #f7f7f7; color: #555; }
+.content ul, .content ol { padding-left: 1.5rem; }
+.content strong { font-weight: bold !important; }
 
 /* Assistant Extra Info */
-.assistant-extra {
-  width: 100%;
-}
-
-.expected-result, .criteria-result {
-  border-radius: 8px;
-  padding: 0.8rem 1.2rem;
-  font-size: 0.9em;
-  margin-bottom: 1rem;
-  border: 1px solid transparent;
-}
-
-.expected-result {
-  background-color: #f0f8ff;
-  border-color: #a2d2ff;
-}
-
-.criteria-result {
-  background-color: #fff0f0;
-  border-color: #ffb3b3;
-}
-
-.expected-title, .criteria-title {
-  font-weight: bold;
-  margin-bottom: 0.5rem;
-}
-
-.expected-title { color: #0077cc; }
-.criteria-title { color: #d92d20; }
-.expected-content, .criteria-content {
-  color: #333;
-  white-space: pre-wrap;
-  word-wrap: break-word;
-}
-
+.assistant-extra { width: 100%; }
+.dynamic-box { border-radius: 8px; padding: 0.8rem 1.2rem; font-size: 0.9em; margin-bottom: 1rem; border: 1px solid; }
+.dynamic-title { font-weight: bold; margin-bottom: 0.5rem; text-transform: capitalize; }
+.dynamic-content { color: #333; white-space: pre-wrap; word-wrap: break-word; }
 </style>
