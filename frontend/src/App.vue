@@ -96,6 +96,7 @@ const fetchLogContent = async (item: TreeItem) => {
     activeSessionData.value = data;
     activeSessionId.value = item.id;
     processSessionKeys(data);
+    expandToItem(item.id);
   } catch (e: any) {
     error.value = e.message;
     activeSessionData.value = null;
@@ -180,7 +181,26 @@ const visibleTopLevelKeys = computed(() => topLevelKeys.value.filter(k => visibl
 const visibleTurnLevelKeys = computed(() => turnLevelKeys.value.filter(k => visibleKeys.value[k]));
 
 const enhanceTree = (nodes: any[], depth = 0): TreeItem[] => {
-  return nodes.map(node => ({ ...node, depth, isExpanded: true, children: node.children ? enhanceTree(node.children, depth + 1) : [] }));
+  return nodes.map(node => ({ ...node, depth, isExpanded: false, children: node.children ? enhanceTree(node.children, depth + 1) : [] }));
+};
+
+const expandToItem = (activeId: string | null) => {
+  if (!activeId) return;
+
+  const allNodes: TreeItem[] = [];
+  const collectNodes = (nodes: TreeItem[]) => {
+    nodes.forEach(n => {
+      allNodes.push(n);
+      if (n.children) collectNodes(n.children);
+    });
+  };
+  collectNodes(treeData.value);
+
+  allNodes.forEach(node => {
+    if (activeId.startsWith(node.id) && node.id.length < activeId.length) {
+      node.isExpanded = true;
+    }
+  });
 };
 
 const findFirstSession = (nodes: TreeItem[]): TreeItem | null => {
@@ -247,6 +267,12 @@ const getBoxColor = (key: string) => {
   const border = baseColor + '80';
   const text = baseColor;
   return { bg, border, text };
+};
+
+const isParentOfActive = (item: TreeItem) => {
+  return activeSessionId.value &&
+         activeSessionId.value.startsWith(item.id) &&
+         item.id !== activeSessionId.value;
 };
 
 
@@ -371,7 +397,11 @@ onUnmounted(() => {
     <div class="file-panel" :class="{ 'is-dragging-over': isDraggingOverPanel }" @dragover.prevent="isDraggingOverPanel = true" @dragleave.prevent="isDraggingOverPanel = false" @drop="handleDrop">
       <ul class="file-list">
         <li v-if="flattenedTree.length === 0 && !isLoading" class="empty-list-message">업로드된 파일이 없습니다.</li>
-        <li v-for="item in flattenedTree" :key="item.id" class="file-item" :class="{ 'active': item.id === activeSessionId }" :style="{ paddingLeft: `${item.depth * 20 + 16}px` }" @click="onFileItemClick(item)">
+        <li v-for="item in flattenedTree" :key="item.id" 
+            class="file-item" 
+            :class="{ 'active': item.id === activeSessionId, 'active-parent': isParentOfActive(item) }" 
+            :style="{ paddingLeft: `${item.depth * 20 + 16}px` }" 
+            @click="onFileItemClick(item)">
           <span class="item-icon">
             <template v-if="item.type === 'folder'">{{ item.isExpanded ? '▼' : '▶' }}</template>
             <template v-else-if="item.type === 'file'">{{ item.isExpanded ? '▼' : '▶' }}</template>
@@ -488,6 +518,7 @@ body { background-color: var(--background-color); }
 .file-list { list-style: none; padding: 0; margin: 0; flex-grow: 1; user-select: none; white-space: nowrap; overflow-y: auto; }
 .file-item { display: flex; align-items: center; cursor: pointer; padding: 0.5rem 1rem; border-bottom: 1px solid #f0f0f0; font-size: 0.9rem; overflow: hidden; text-overflow: ellipsis; position: relative; }
 .file-item:hover { background-color: #eef5ff; }
+.file-item.active-parent { background-color: #eef5ff; }
 .file-item.active { background-color: #d4e8ff; font-weight: 500; }
 .item-icon { margin-right: 8px; font-size: 0.8em; width: 12px; text-align: center; }
 .item-name { flex-grow: 1; }
