@@ -156,7 +156,7 @@ const deleteItem = async (item: TreeItem) => {
 
 // --- 유틸리티 함수 ---
 const processSessionKeys = (data: SessionData) => {
-  const ignoreList = ['accumulated_conversations', 'conversation', 'response'];
+  const ignoreList = ['accumulated_conversations', 'conversation', 'response', 'input'];
   const keys = Object.keys(data).filter(k => !ignoreList.includes(k));
   
   topLevelKeys.value = keys.filter(k => !Array.isArray(data[k]));

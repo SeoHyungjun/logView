@@ -152,8 +152,25 @@ def get_log_content(file_path: str, session: int = Query(0, description="파일 
         if 'accumulated_conversations' not in session_data:
             print(f"--- [Session {session}] 'accumulated_conversations' not found. Attempting to construct it. ---")
             conversation_to_process = None
-            # 1a. 'conversation'과 'response'를 조합
-            if 'conversation' in session_data and 'response' in session_data:
+            # 1a. 'input'과 'response'를 조합 (우선순위 1)
+            if 'input' in session_data and 'response' in session_data:
+                print(f"--- [Session {session}] Constructing from 'input' and 'response'. ---")
+                new_conversation = []
+                input_turns = session_data['input']
+                assistant_turns = session_data['response']
+                is_input_turn_object = len(input_turns) > 0 and isinstance(input_turns[0], dict)
+                max_len = max(len(input_turns), len(assistant_turns))
+                for i in range(max_len):
+                    if i < len(input_turns):
+                        if is_input_turn_object:
+                            new_conversation.append(input_turns[i])
+                        else:
+                            new_conversation.append({'role': 'user', 'content': input_turns[i]})
+                    if i < len(assistant_turns):
+                        new_conversation.append({'role': 'assistant', 'content': assistant_turns[i]})
+                conversation_to_process = new_conversation
+            # 1b. 'conversation'과 'response'를 조합 (우선순위 2)
+            elif 'conversation' in session_data and 'response' in session_data:
                 print(f"--- [Session {session}] Constructing from 'conversation' and 'response'. ---")
                 new_conversation = []
                 user_turns = session_data['conversation']
@@ -169,7 +186,7 @@ def get_log_content(file_path: str, session: int = Query(0, description="파일 
                     if i < len(assistant_turns):
                         new_conversation.append({'role': 'assistant', 'content': assistant_turns[i]})
                 conversation_to_process = new_conversation
-            # 1b. 'conversation'만 있는 경우
+            # 1c. 'conversation'만 있는 경우
             elif 'conversation' in session_data:
                 print(f"--- [Session {session}] Constructing from 'conversation' only. ---")
                 conversation_to_process = session_data['conversation']
